@@ -1,0 +1,10 @@
+# SwiftPM 构建产物
+.build/
+.cache/
+*.o
+*.swiftmodule
+
+# 打包结果
+dist/
+
+.DS_Store
