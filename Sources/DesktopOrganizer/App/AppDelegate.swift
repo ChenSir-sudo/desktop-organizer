@@ -9,13 +9,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var statusItem: NSStatusItem?
     private var boxListMenu = NSMenu()
-    private var preferencesController: PreferencesWindowController?
+    private var mainWindowController: MainWindowController?
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: 启动
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         store.load()
+
+        buildMainMenu()
+        mainWindowController = MainWindowController()
 
         store.$boxes
             .receive(on: RunLoop.main)
@@ -27,15 +30,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         BoxWindowManager.shared.sync(store.boxes)
 
         setupStatusItem()
-        preferencesController = PreferencesWindowController(onOrganize: { [weak self] in
-            self?.runOrganize()
-        })
-
         Diagnostics.runIfRequested()
 
-        if ProcessInfo.processInfo.environment["DO_DIAG_PREFS"] != nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.openPreferences() }
+        if store.prefs.openMainWindowOnLaunch {
+            mainWindowController?.show()
         }
+
+        if ProcessInfo.processInfo.environment["DO_DIAG_MAINSETTINGS"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                self.mainWindowController?.showSettingsPage()
+            }
+        }
+    }
+
+    // MARK: 主菜单
+    //
+    // 程序是 .regular（有 Dock 图标），所以必须有一套主菜单，
+    // 否则 ⌘Q、⌘V、文本编辑的剪切/拷贝/粘贴全都不可用。
+    private func buildMainMenu() {
+        let appName = "桌面整理"
+        let mainMenu = NSMenu()
+
+        // 应用菜单
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "关于 \(appName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "打开主窗口", action: #selector(openMainWindow), keyEquivalent: "0").target = self
+        appMenu.addItem(withTitle: "设置…", action: #selector(openMainWindowSettings), keyEquivalent: ",").target = self
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "隐藏 \(appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "退出 \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        // 编辑菜单：文本框的剪切/拷贝/粘贴依赖它
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "编辑")
+        editMenu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
+        // 窗口菜单
+        let windowMenuItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "窗口")
+        windowMenu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "缩放", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(withTitle: "显示全部整理框", action: #selector(showAll), keyEquivalent: "").target = self
+        windowMenu.addItem(withTitle: "隐藏全部整理框", action: #selector(hideAll), keyEquivalent: "").target = self
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+
+        NSApp.mainMenu = mainMenu
+        NSApp.windowsMenu = windowMenu
+    }
+
+    @objc private func openMainWindowSettings() {
+        mainWindowController?.showSettingsPage()
+        mainWindowController?.show()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -46,9 +106,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         false
     }
 
+    /// 点 Dock 图标时把主窗口叫回来。
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        mainWindowController?.show()
+        return true
+    }
+
     // MARK: 菜单栏
 
     private func setupStatusItem() {
+        guard store.prefs.showMenuBarIcon else { return }
+
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
             let image = NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: "桌面整理")
@@ -61,9 +129,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.autoenablesItems = false
         menu.delegate = self
 
+        menu.addItem(menuItem("打开主窗口", #selector(openMainWindow), key: "0"))
+        menu.addItem(.separator())
         menu.addItem(menuItem("新建整理框", #selector(newBox), key: "n"))
-        menu.addItem(menuItem("一键分类整理桌面", #selector(organize), key: "k"))
-
+        menu.addItem(menuItem("按类型归类桌面（不移动文件）", #selector(categorize), key: "k"))
         menu.addItem(.separator())
 
         let boxItem = NSMenuItem(title: "整理框", action: nil, keyEquivalent: "")
@@ -72,14 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(menuItem("显示全部整理框", #selector(showAll), key: ""))
         menu.addItem(menuItem("隐藏全部整理框", #selector(hideAll), key: ""))
-
         menu.addItem(.separator())
-
-        menu.addItem(menuItem("打开归档文件夹", #selector(openRootFolder), key: ""))
-        menu.addItem(menuItem("设置…", #selector(openPreferences), key: ","))
-
-        menu.addItem(.separator())
-
         menu.addItem(menuItem("退出桌面整理", #selector(quit), key: "q"))
 
         item.menu = menu
@@ -104,100 +166,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             boxListMenu.addItem(empty)
         } else {
             for box in boxes {
-                let item = NSMenuItem(title: "\(box.name)（\(box.folderURL.lastPathComponent)）", action: #selector(focusBox(_:)), keyEquivalent: "")
+                let hidden = windowManager.isHidden(id: box.id)
+                let title = "\(box.name)（\(box.items.count) 项）\(hidden ? " · 已隐藏" : "")"
+                let item = NSMenuItem(title: title, action: #selector(focusBox(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = box.id
                 boxListMenu.addItem(item)
             }
         }
         boxListMenu.addItem(.separator())
-        let removeItem = NSMenuItem(title: "整理框管理…", action: #selector(openPreferences), keyEquivalent: "")
-        removeItem.target = self
-        boxListMenu.addItem(removeItem)
+        let windowItem = NSMenuItem(title: "打开主窗口…", action: #selector(openMainWindow), keyEquivalent: "")
+        windowItem.target = self
+        boxListMenu.addItem(windowItem)
     }
 
     // MARK: 动作
 
+    @objc private func openMainWindow() {
+        mainWindowController?.show()
+    }
+
     @objc private func newBox() {
-        let name = "整理框 \(store.boxes.count + 1)"
-        let box = store.addBox(name: name, folder: nil)
-        BoxWindowManager.shared.focus(id: box.id)
+        let box = store.addBox()
+        windowManager.sync(store.boxes)
+        windowManager.focus(id: box.id)
     }
 
     @objc private func focusBox(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID else { return }
-        BoxWindowManager.shared.focus(id: id)
+        windowManager.focus(id: id)
     }
 
-    @objc private func showAll() {
-        BoxWindowManager.shared.showAll()
-    }
+    @objc private func showAll() { windowManager.showAll() }
+    @objc private func hideAll() { windowManager.hideAll() }
 
-    @objc private func hideAll() {
-        BoxWindowManager.shared.hideAll()
-    }
-
-    @objc private func openRootFolder() {
-        let url = store.prefs.rootURL
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(url)
-    }
-
-    @objc private func openPreferences() {
-        preferencesController?.show()
-    }
-
-    @objc private func organize() {
-        runOrganize()
+    @objc private func categorize() {
+        mainWindowController?.show()
+        let outcome = DeskCategorizer.categorizeIntoBoxes()
+        windowManager.sync(store.boxes)
+        windowManager.showAll()
+        FileActions.info(title: "归类完成", message: outcome.summary)
     }
 
     @objc private func quit() {
         store.save()
         NSApp.terminate(nil)
-    }
-
-    // MARK: 一键分类
-
-    private func runOrganize() {
-        let groups = DeskSorter.scanDesktop()
-        let total = groups.values.reduce(0) { $0 + $1.count }
-
-        guard total > 0 else {
-            presentInfo(title: "桌面很干净", message: "没有找到需要整理的文件。")
-            return
-        }
-
-        if store.prefs.confirmBeforeOrganize {
-            NSApp.activate(ignoringOtherApps: true)
-            let alert = NSAlert()
-            alert.alertStyle = .informational
-            alert.messageText = "把桌面上的 \(total) 个文件按类型整理？"
-            let detail = FileCategory.allCases
-                .compactMap { category -> String? in
-                    guard let urls = groups[category], !urls.isEmpty else { return nil }
-                    return "\(category.rawValue)  \(urls.count) 项"
-                }
-                .joined(separator: "\n")
-            alert.informativeText = detail + "\n\n移动目标：\n\(store.prefs.rootURL.path)"
-            alert.addButton(withTitle: "开始整理")
-            alert.addButton(withTitle: "取消")
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
-        }
-
-        let (_, summary) = DeskSorter.organize()
-        BoxWindowManager.shared.sync(store.boxes)
-        BoxWindowManager.shared.showAll()
-        BoxWindowManager.shared.refreshAll()
-        presentInfo(title: "整理完成", message: summary)
-    }
-
-    private func presentInfo(title: String, message: String) {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: "好")
-        alert.runModal()
     }
 }

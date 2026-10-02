@@ -10,11 +10,14 @@ if arguments.contains("--selftest") {
     HeadlessTools.selfTest()
     exit(0)
 }
+if arguments.contains("--snaptest") {
+    HeadlessTools.snapTest()
+    exit(0)
+}
 
-// 正常启动：纯 AppKit 外壳（菜单栏常驻）+ 若干无边框浮动面板。
-// 视图内容用 SwiftUI 承载（见 Views/）。
+// 正常启动：主管理窗口 + 若干无边框浮动整理框，视图内容用 SwiftUI 承载。
 let application = NSApplication.shared
 let appDelegate = AppDelegate()
 application.delegate = appDelegate
-application.setActivationPolicy(.accessory)
+application.setActivationPolicy(.regular)
 application.run()

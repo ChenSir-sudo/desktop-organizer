@@ -29,14 +29,9 @@ enum FileCategory: String, CaseIterable {
     }
 }
 
-enum DeskSorter {
-    struct GroupResult {
-        var category: FileCategory
-        var folder: URL
-        var result: FileMover.Result
-    }
+/// 桌面分类。**只读取，不移动任何文件** —— 结果是一批装满了「引用」的整理框。
+enum DeskCategorizer {
 
-    // 按扩展名先做一次显式判断，比 UTType 更可预测
     private static let installExtensions: Set<String> = ["dmg", "pkg", "mpkg", "iso"]
     private static let archiveExtensions: Set<String> = [
         "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz", "zst", "lz4", "cab", "jar"
@@ -65,9 +60,8 @@ enum DeskSorter {
         if type.conforms(to: .movie) || type.conforms(to: .video) { return .video }
         if type.conforms(to: .audio) { return .audio }
         if type.conforms(to: .sourceCode) || type.conforms(to: .script) { return .code }
-        if type.conforms(to: .spreadsheet) || type.conforms(to: .presentation) || type.conforms(to: .pdf) || type.conforms(to: .rtf) {
-            return .document
-        }
+        if type.conforms(to: .spreadsheet) || type.conforms(to: .presentation)
+            || type.conforms(to: .pdf) || type.conforms(to: .rtf) { return .document }
         if type.conforms(to: .text) { return .document }
         if type.conforms(to: .archive) { return .archive }
         if type.conforms(to: .diskImage) { return .installer }
@@ -75,85 +69,64 @@ enum DeskSorter {
         return .other
     }
 
-    /// 扫描桌面顶层，按类型分组。会跳过：隐藏文件、整理根目录、各整理框的目标文件夹、程序自身所在目录。
+    /// 扫描桌面顶层并按类型分组。会跳过：隐藏文件、程序自身所在目录、桌面根目录。
     static func scanDesktop() -> [FileCategory: [URL]] {
         let fm = FileManager.default
         let desktop = AppPaths.desktopDirectory.standardizedFileURL
-        let excluded = excludedPaths()
-
         guard let names = try? fm.contentsOfDirectory(atPath: desktop.path) else { return [:] }
 
         var groups: [FileCategory: [URL]] = [:]
         for name in names {
             if name.hasPrefix(".") { continue }
             let url = desktop.appendingPathComponent(name).standardizedFileURL
-            if excluded.contains(url.path) { continue }
-            if FileMover.isInsideRunningApp(url) { continue }
-            // 跳过符号链接之外的普通项即可，不存在的项忽略
+            if BoxConfig.isProtected(url) { continue }
             guard fm.fileExists(atPath: url.path) else { continue }
             groups[category(for: url), default: []].append(url)
         }
         return groups
     }
 
-    private static func excludedPaths() -> Set<String> {
-        var set = Set<String>()
-        let desktopPath = AppPaths.desktopDirectory.standardizedFileURL.path
-        let store = Store.shared
-
-        set.insert(store.prefs.rootURL.standardizedFileURL.path)
-        for box in store.boxes {
-            set.insert(box.folderURL.standardizedFileURL.path)
-        }
-        // 保护：程序自己所在的顶层目录（例如从某个项目目录里运行）
-        var cursor = Bundle.main.bundleURL.standardizedFileURL
-        while cursor.path != "/" && cursor.path != desktopPath {
-            if cursor.deletingLastPathComponent().path == desktopPath {
-                set.insert(cursor.path)
-                break
-            }
-            cursor = cursor.deletingLastPathComponent()
-        }
-        return set
+    struct Outcome {
+        var createdBoxes: Int = 0
+        var addedItems: Int = 0
+        var lines: [String] = []
+        var summary: String = ""
     }
 
-    /// 真正执行分类：为每个有内容的分类准备文件夹和整理框，然后移动文件。
-    static func organize() -> (results: [GroupResult], summary: String) {
+    /// 把桌面项目按类型收进对应的整理框。**文件一个都不动。**
+    static func categorizeIntoBoxes() -> Outcome {
         let store = Store.shared
         let groups = scanDesktop()
+        var outcome = Outcome()
 
-        var results: [GroupResult] = []
-        var lines: [String] = []
-
-        let ordered = FileCategory.allCases.filter { groups[$0]?.isEmpty == false }
+        let ordered = FileCategory.allCases.filter { !(groups[$0]?.isEmpty ?? true) }
+        guard !ordered.isEmpty else {
+            outcome.summary = "桌面很干净，没有需要归类的东西。"
+            return outcome
+        }
 
         for category in ordered {
             guard let urls = groups[category], !urls.isEmpty else { continue }
-            let folder = store.prefs.rootURL.appendingPathComponent(category.rawValue, isDirectory: true)
-            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 
-            if store.box(withFolder: folder.standardizedFileURL.path) == nil
-                && store.box(withFolder: folder.path) == nil {
-                store.addBox(name: category.rawValue, folder: folder)
+            let boxID: UUID
+            if let existing = store.boxes.first(where: { $0.name == category.rawValue }) {
+                boxID = existing.id
+            } else {
+                let box = store.addBox(name: category.rawValue)
+                store.update(id: box.id) { $0.accentHex = category.accentHex }
+                boxID = box.id
+                outcome.createdBoxes += 1
             }
 
-            let result = FileMover.move(urls, into: folder)
-            results.append(GroupResult(category: category, folder: folder, result: result))
-
-            var line = "\(category.rawValue)：\(result.moved.count) 项"
-            if !result.failures.isEmpty {
-                line += "（\(result.failures.count) 项失败）"
-            }
-            lines.append(line)
+            let added = store.addItems(urls, to: boxID)
+            outcome.addedItems += added
+            outcome.lines.append("\(category.rawValue)：\(added) 项")
         }
 
-        if results.isEmpty {
-            return ([], "桌面很干净，没有需要整理的文件。")
-        }
-
-        let totalMoved = results.reduce(0) { $0 + $1.result.moved.count }
-        var summary = "共整理 \(totalMoved) 项文件\n\n" + lines.joined(separator: "\n")
-        summary += "\n\n归档位置：\(store.prefs.rootURL.path)"
-        return (results, summary)
+        var summary = "已把 \(outcome.addedItems) 项收进整理框\n\n"
+        summary += outcome.lines.joined(separator: "\n")
+        summary += "\n\n文件没有被移动，只是被整理框引用了。"
+        outcome.summary = summary
+        return outcome
     }
 }

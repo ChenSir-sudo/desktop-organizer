@@ -41,25 +41,60 @@ enum BoxMaterial: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-// MARK: - 整理框配置
+// MARK: - 引用项
+
+/// 整理框里的一个条目。**只记录路径，永远不搬运文件。**
+struct BoxItem: Codable, Identifiable, Equatable {
+    var id: UUID = UUID()
+    var path: String
+    var addedAt: Date = Date()
+
+    init(path: String) {
+        self.path = path
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            ((try? c.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback
+        }
+        id = value(.id, UUID())
+        path = value(.path, "")
+        addedAt = value(.addedAt, Date())
+    }
+
+    var url: URL { URL(fileURLWithPath: path) }
+    var name: String { url.lastPathComponent }
+    var exists: Bool { FileManager.default.fileExists(atPath: path) }
+}
+
+// MARK: - 整理框
 
 struct BoxConfig: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var name: String = "新建整理框"
-    var folderPath: String = ""
+    var items: [BoxItem] = []
     var frameX: Double = 0
     var frameY: Double = 0
     var frameW: Double = 300
     var frameH: Double = 360
-    var opacity: Double = 0.88
+    var opacity: Double = 0.8
     var material: BoxMaterial = .hud
     var cornerRadius: Double = 20
     var floatOnTop: Bool = true
     var accentHex: String = "0A84FF"
+    /// 1.0 用它记录「搬移目标文件夹」。现在只用于一次性迁移，之后不再有任何搬移行为。
+    var legacyFolderPath: String? = nil
 
     init() {}
 
-    // 宽容解码：旧配置缺少字段时用默认值补上，避免升级后配置读不出来。
+    enum CodingKeys: String, CodingKey {
+        case id, name, items, frameX, frameY, frameW, frameH
+        case opacity, material, cornerRadius, floatOnTop, accentHex
+        case legacyFolderPath
+        case folderPath          // 1.0 的字段名，仅解码
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
@@ -67,20 +102,34 @@ struct BoxConfig: Codable, Identifiable, Equatable {
         }
         id = value(.id, UUID())
         name = value(.name, "整理框")
-        folderPath = value(.folderPath, "")
+        items = value(.items, [])
         frameX = value(.frameX, 0)
         frameY = value(.frameY, 0)
         frameW = value(.frameW, 300)
         frameH = value(.frameH, 360)
-        opacity = value(.opacity, 0.88)
+        opacity = value(.opacity, 0.8)
         material = value(.material, .hud)
         cornerRadius = value(.cornerRadius, 20)
         floatOnTop = value(.floatOnTop, true)
         accentHex = value(.accentHex, "0A84FF")
+        legacyFolderPath = ((try? c.decodeIfPresent(String.self, forKey: .legacyFolderPath)) ?? nil)
+            ?? ((try? c.decodeIfPresent(String.self, forKey: .folderPath)) ?? nil)
     }
 
-    var folderURL: URL {
-        URL(fileURLWithPath: folderPath.isEmpty ? AppPaths.defaultRootDirectory.path : folderPath)
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(items, forKey: .items)
+        try c.encode(frameX, forKey: .frameX)
+        try c.encode(frameY, forKey: .frameY)
+        try c.encode(frameW, forKey: .frameW)
+        try c.encode(frameH, forKey: .frameH)
+        try c.encode(opacity, forKey: .opacity)
+        try c.encode(material, forKey: .material)
+        try c.encode(cornerRadius, forKey: .cornerRadius)
+        try c.encode(floatOnTop, forKey: .floatOnTop)
+        try c.encode(accentHex, forKey: .accentHex)
     }
 
     var frame: CGRect {
@@ -92,27 +141,49 @@ struct BoxConfig: Codable, Identifiable, Equatable {
             frameH = Double(newValue.size.height)
         }
     }
+
+    /// 不允许被收进整理框的路径：程序自己，以及桌面根目录本身。
+    static func isProtected(_ url: URL) -> Bool {
+        let target = url.standardizedFileURL.path
+        let app = Bundle.main.bundleURL.standardizedFileURL.path
+        if target == app || app.hasPrefix(target + "/") { return true }
+        if target == AppPaths.desktopDirectory.standardizedFileURL.path { return true }
+        return false
+    }
 }
 
 // MARK: - 全局偏好
 
 struct Preferences: Codable, Equatable {
-    var rootPath: String = ""
-    var defaultOpacity: Double = 0.88
+    var defaultOpacity: Double = 0.8
     var defaultMaterial: BoxMaterial = .hud
     var defaultCornerRadius: Double = 20
     var defaultFloatOnTop: Bool = true
-    var confirmBeforeOrganize: Bool = true
+    var confirmBeforeCategorize: Bool = true
+    var showMenuBarIcon: Bool = true
+    var openMainWindowOnLaunch: Bool = true
 
-    var rootURL: URL {
-        URL(fileURLWithPath: rootPath.isEmpty ? AppPaths.defaultRootDirectory.path : rootPath)
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            ((try? c.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback
+        }
+        defaultOpacity = value(.defaultOpacity, 0.8)
+        defaultMaterial = value(.defaultMaterial, .hud)
+        defaultCornerRadius = value(.defaultCornerRadius, 20)
+        defaultFloatOnTop = value(.defaultFloatOnTop, true)
+        confirmBeforeCategorize = value(.confirmBeforeCategorize, true)
+        showMenuBarIcon = value(.showMenuBarIcon, true)
+        openMainWindowOnLaunch = value(.openMainWindowOnLaunch, true)
     }
 }
 
 // MARK: - 落盘结构
 
 private struct AppConfig: Codable {
-    var version: Int = 1
+    var version: Int = 2
     var boxes: [BoxConfig] = []
     var prefs: Preferences = Preferences()
 }
@@ -138,29 +209,39 @@ final class Store: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
+        let hadConfig = FileManager.default.fileExists(atPath: AppPaths.configURL.path)
         if let data = try? Data(contentsOf: AppPaths.configURL),
            let config = try? JSONDecoder().decode(AppConfig.self, from: data) {
             boxes = config.boxes
             prefs = config.prefs
+            migrateLegacyFolders()
         }
 
-        if prefs.rootPath.isEmpty {
-            prefs.rootPath = AppPaths.defaultRootDirectory.path
-        }
-        // 修正历史配置里可能出现的空路径
-        for index in boxes.indices where boxes[index].folderPath.isEmpty {
-            boxes[index].folderPath = defaultFolderURL(for: boxes[index].name).path
-        }
-        if boxes.isEmpty {
+        if boxes.isEmpty && !hadConfig {
             createStarterBoxes()
         }
         save()
     }
 
+    /// 1.0 的整理框绑定「搬移目标文件夹」。升级后把该文件夹里已有的内容导入成**引用**，
+    /// 只读不改，一次性完成；之后这个字段彻底弃用，程序再也不会移动任何文件。
+    private func migrateLegacyFolders() {
+        for index in boxes.indices {
+            guard let folderPath = boxes[index].legacyFolderPath, !folderPath.isEmpty else { continue }
+            boxes[index].legacyFolderPath = nil
+            guard boxes[index].items.isEmpty else { continue }
+            let folder = URL(fileURLWithPath: folderPath)
+            guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { continue }
+            for name in names.sorted() where !name.hasPrefix(".") {
+                boxes[index].items.append(BoxItem(path: folder.appendingPathComponent(name).path))
+            }
+        }
+    }
+
     func save() {
         saveWorkItem?.cancel()
         saveWorkItem = nil
-        let config = AppConfig(version: 1, boxes: boxes, prefs: prefs)
+        let config = AppConfig(version: 2, boxes: boxes, prefs: prefs)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(config) else { return }
@@ -181,28 +262,27 @@ final class Store: ObservableObject {
         boxes.first { $0.id == id }
     }
 
-    func box(withFolder path: String) -> BoxConfig? {
-        boxes.first { $0.folderPath == path }
+    func index(of id: UUID) -> Int? {
+        boxes.firstIndex { $0.id == id }
     }
 
-    func defaultFolderURL(for name: String) -> URL {
-        let safe = name.replacingOccurrences(of: "/", with: "-")
-        return prefs.rootURL.appendingPathComponent(safe, isDirectory: true)
+    func itemCount(of id: UUID) -> Int {
+        box(id: id)?.items.count ?? 0
     }
 
     // MARK: 增删改
 
     func update(id: UUID, _ mutate: (inout BoxConfig) -> Void) {
-        guard let index = boxes.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = index(of: id) else { return }
         mutate(&boxes[index])
         scheduleSave()
     }
 
     @discardableResult
-    func addBox(name: String, folder: URL?, frame: CGRect? = nil) -> BoxConfig {
+    func addBox(name: String? = nil, items: [BoxItem] = [], frame: CGRect? = nil) -> BoxConfig {
         var box = BoxConfig()
-        box.name = name
-        box.folderPath = (folder ?? defaultFolderURL(for: name)).path
+        box.name = name ?? "整理框 \(boxes.count + 1)"
+        box.items = items
         box.opacity = prefs.defaultOpacity
         box.material = prefs.defaultMaterial
         box.cornerRadius = prefs.defaultCornerRadius
@@ -210,10 +290,7 @@ final class Store: ObservableObject {
         box.accentHex = AccentPalette.all[boxes.count % AccentPalette.all.count]
 
         let size = CGSize(width: 300, height: 360)
-        let target = frame ?? LayoutEngine.nextFreeFrame(size: size, existing: boxes.map(\.frame))
-        box.frame = target
-
-        try? FileManager.default.createDirectory(at: box.folderURL, withIntermediateDirectories: true)
+        box.frame = frame ?? LayoutEngine.nextFreeFrame(size: size, existing: boxes.map(\.frame))
 
         boxes.append(box)
         scheduleSave()
@@ -225,22 +302,42 @@ final class Store: ObservableObject {
         scheduleSave()
     }
 
+    /// 往框里加引用。已存在或受保护的路径会跳过，返回真正新增的数量。
+    @discardableResult
+    func addItems(_ urls: [URL], to id: UUID) -> Int {
+        guard let index = index(of: id) else { return 0 }
+        var known = Set(boxes[index].items.map(\.path))
+        var added = 0
+        for url in urls {
+            let path = url.standardizedFileURL.path
+            guard !path.isEmpty, !known.contains(path), !BoxConfig.isProtected(url) else { continue }
+            boxes[index].items.append(BoxItem(path: path))
+            known.insert(path)
+            added += 1
+        }
+        if added > 0 { scheduleSave() }
+        return added
+    }
+
+    @discardableResult
+    func removeItems(_ itemIDs: Set<UUID>, from id: UUID) -> Int {
+        guard let index = index(of: id) else { return 0 }
+        let before = boxes[index].items.count
+        boxes[index].items.removeAll { itemIDs.contains($0.id) }
+        let removed = before - boxes[index].items.count
+        if removed > 0 { scheduleSave() }
+        return removed
+    }
+
+    func removeAllItems(from id: UUID) {
+        update(id: id) { $0.items.removeAll() }
+    }
+
     // MARK: 首次启动
 
     private func createStarterBoxes() {
-        try? FileManager.default.createDirectory(at: prefs.rootURL, withIntermediateDirectories: true)
-        let starters = ["待整理", "图片", "文档"]
-        var placed: [CGRect] = []
-        for name in starters {
-            var box = BoxConfig()
-            box.name = name
-            box.folderPath = defaultFolderURL(for: name).path
-            box.accentHex = AccentPalette.all[placed.count % AccentPalette.all.count]
-            let frame = LayoutEngine.nextFreeFrame(size: CGSize(width: 300, height: 360), existing: placed)
-            box.frame = frame
-            placed.append(frame)
-            try? FileManager.default.createDirectory(at: box.folderURL, withIntermediateDirectories: true)
-            boxes.append(box)
+        for name in ["待整理", "图片", "文档"] {
+            addBox(name: name)
         }
         save()
     }
@@ -249,7 +346,7 @@ final class Store: ObservableObject {
 // MARK: - 自动排布
 
 enum LayoutEngine {
-    /// 在屏幕可见区域内按格子扫描，找一块不与现有框重叠的位置。
+    /// 从右上角开始扫，避开已有窗口 —— 不再往左上角堆。
     static func nextFreeFrame(size: CGSize, existing: [CGRect]) -> CGRect {
         let screen = NSScreen.main?.visibleFrame
             ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
@@ -260,19 +357,18 @@ enum LayoutEngine {
         let cols = max(1, Int((screen.width - gap * 2) / cellW))
 
         var index = 0
-        let maxCells = max(cols, 1) * 6
-        while index < maxCells {
+        while index < cols * 6 {
             let col = index % cols
             let row = index / cols
-            let x = screen.minX + gap + CGFloat(col) * cellW
+            let x = screen.maxX - gap - size.width - CGFloat(col) * cellW
             let y = screen.maxY - gap - size.height - CGFloat(row) * cellH
             let candidate = CGRect(x: x, y: y, width: size.width, height: size.height)
-            let overlaps = existing.contains { $0.intersects(candidate.insetBy(dx: -10, dy: -10)) }
-            if !overlaps { return candidate }
+            if !existing.contains(where: { $0.intersects(candidate.insetBy(dx: -10, dy: -10)) }) {
+                return candidate
+            }
             index += 1
         }
 
-        // 兜底：从右上角阶梯式铺开
         let cascade = CGFloat(existing.count % 8) * 28
         return CGRect(
             x: screen.maxX - size.width - gap - cascade,
@@ -288,26 +384,17 @@ enum LayoutEngine {
         result.size.width = max(result.size.width, minSize.width)
         result.size.height = max(result.size.height, minSize.height)
 
-        let screens = NSScreen.screens
-        let visible = screens.first { $0.frame.intersects(frame) }?.visibleFrame ?? NSScreen.main?.visibleFrame
+        let visible = NSScreen.screens.first { $0.frame.intersects(frame) }?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
         guard let bounds = visible else { return result }
 
-        // 完全跑出屏幕时重置到右上角
         if !bounds.intersects(result) {
-            return CGRect(
-                x: bounds.maxX - result.width - 24,
-                y: bounds.maxY - result.height - 24,
-                width: result.width,
-                height: result.height
-            )
+            return CGRect(x: bounds.maxX - result.width - 24,
+                          y: bounds.maxY - result.height - 24,
+                          width: result.width, height: result.height)
         }
-        // 顶部跑出去就拉回来
-        if result.maxY > bounds.maxY {
-            result.origin.y = bounds.maxY - result.height
-        }
-        if result.maxY < bounds.minY + 60 {
-            result.origin.y = bounds.minY + 60
-        }
+        if result.maxY > bounds.maxY { result.origin.y = bounds.maxY - result.height }
+        if result.maxY < bounds.minY + 60 { result.origin.y = bounds.minY + 60 }
         result.origin.x = min(result.origin.x, bounds.maxX - 80)
         result.origin.x = max(result.origin.x, bounds.minX - result.width + 80)
         return result

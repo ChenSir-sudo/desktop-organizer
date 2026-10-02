@@ -1,35 +1,57 @@
 # 桌面整理（DesktopOrganizer）
 
-<img src="Resources/AppIcon-1024.png" width="128" align="right" alt="应用图标" />
+<img src="Resources/AppIcon-1024.png" width="120" align="right" alt="应用图标" />
 
 一个只做一件事的 macOS 小工具：**整理框**。
 
-桌面上摆几个毛玻璃小面板，把文件拖进去就真的被归类到对应文件夹；也可以一键把整个桌面按文件类型自动分类。
+在桌面上摆几个毛玻璃小面板，把文件拖进去归类。**文件永远不会被移动、改名或删除** ——
+整理框只记录路径引用，你的工程路径、相对引用、IDE 工作区都不会被搞乱。
 
-原生 Swift + AppKit/SwiftUI 实现，无第三方依赖，无 Electron。
+原生 Swift + AppKit/SwiftUI，无第三方依赖，无 Electron。
 
-![整理框](docs/screenshots/boxes.png)
+---
 
-<p align="center">
-  <img src="docs/screenshots/settings.png" width="46%" alt="外观设置" />
-  <img src="docs/screenshots/preferences.png" width="46%" alt="全局设置" />
-</p>
+## 最重要的一条：不碰你的文件
+
+| 操作 | 对磁盘上的文件 |
+| --- | --- |
+| 把文件拖进整理框 | **什么都不做**，只记录路径 |
+| 把文件夹拖进整理框 | **什么都不做**，只记录路径 |
+| 删除整理框 | **什么都不做** |
+| 「按类型归类桌面」 | **什么都不做**，只建立引用 |
+| 清空框内条目 | **什么都不做** |
+| 条目右键 → 移到废纸篓 | 唯一会动文件的操作，每次二次确认 |
+
+如果某个文件被你在访达里移走或删掉了，整理框会把它标成「已失效」（图标变暗 + ⚠️），
+右键移除即可。引用不会自动跟踪文件。
 
 ---
 
 ## 功能
 
-| 能力 | 说明 |
-| --- | --- |
-| 新建整理框 | 菜单栏 → 新建整理框；自动找一块不重叠的位置摆放 |
-| 删除整理框 | 面板右上角 `×`，或外观设置里的「删除这个整理框」；**只删框，不删文件** |
-| 拖拽整理文件 | 把文件/文件夹拖进框 → 真实移动到该框对应的文件夹 |
-| 一键分类整理 | 菜单栏 → 一键分类整理桌面；按类型分到 图片/文档/视频/音频/压缩包/安装包/应用/代码/文件夹/其他 |
-| 背景效果 | 6 种毛玻璃材质 + 纯色，透明度 15%–100% 可调 |
-| 名字 | 双击标题直接改名，或在外观设置里改 |
-| 外观 | 圆角 0–36、7 种主题色、窗口置顶开关 |
+### 主窗口：一个正经的操作页面
 
-框里显示的就是该文件夹的真实内容（1.5 秒轮询刷新）。双击文件打开，右键可以「在访达中显示 / 移回桌面 / 移到废纸篓」。
+![主窗口](docs/screenshots/main.png)
+
+- **整理框页**：所有整理框一览，显示条目数、失效数，可一键隐藏/定位/删除
+- **设置页**：新框默认外观、桌面归类、启动行为
+- 两页之间是整页滑动切换，不是弹窗
+- 有 Dock 图标，点一下就能把窗口叫回来
+
+### 整理框
+
+![整理框](docs/screenshots/box.png)
+
+- **上栏右侧的操作按钮平时隐藏**，鼠标移过去才淡入 —— 平时就是一块干净的玻璃，不打扰
+- 齿轮**整页切换到设置页**（窗口尺寸不变），带左右滑动过渡
+- **只有双击标题才能改名**，避免拖动或单击误触
+- 拖文件进来即归类；右键条目可以打开、在访达中显示、复制路径、移除、移到废纸篓
+- 背景效果：6 种毛玻璃材质 + 纯色，透明度 10%–100%，圆角 0–36
+
+### 窗口对齐
+
+拖动整理框靠近另一块整理框或屏幕边缘/中线时，会在 8pt 内**吸附**，
+并显示一条淡淡的引导线（吸附点还有一个小方块标记）。支持边对边拼接。
 
 ---
 
@@ -40,43 +62,26 @@
 ```bash
 cd DesktopOrganizer
 ./scripts/build-app.sh          # 默认 release
-```
-
-产物：`dist/桌面整理.app`，双击即可运行。
-
-启动：
-
-```bash
 open "dist/桌面整理.app"
 ```
+
+产物在 `dist/桌面整理.app`。
 
 ---
 
 ## 使用
 
-程序是**菜单栏应用**（`LSUIElement`），没有 Dock 图标和主窗口。
+启动后：
 
-- 菜单栏 `⊞` 图标 → 新建整理框 / 一键分类 / 显示隐藏 / 设置
-- 面板**标题栏**按住可拖动整个框（不是系统标题栏，是我们画的那条）
-- 面板**右下角斜纹**按住可缩放
-- 首次启动会自动建三个框：待整理 / 图片 / 文档
+1. 出现**主窗口**，列出所有整理框
+2. 点右上角「+ 新建」建一个整理框，它会淡入出现在屏幕右上角的空位
+3. 把文件拖进整理框
+4. 鼠标移到整理框上栏**右侧**，出现 `+` `⚙` `✕` 三个按钮
 
-默认归档位置：`~/Documents/桌面整理/<整理框名字>/`，可在设置里改。
-每个框也可以单独指定任意文件夹。
+菜单栏也有一个 `⊞` 图标（可在设置里关掉），提供新建、归类、显示/隐藏等快捷入口。
 
----
-
-## 设计取舍
-
-- **整理 = 真实移动文件**：不是视觉分组，框里就是磁盘上那个文件夹的内容。
-  好处是关掉程序文件也不乱；代价是拖进去的文件确实离开了桌面。
-- **重名自动让路**：`报告.pdf` 已存在时，第二个变成 `报告 2.pdf`，绝不覆盖。
-- **永远不会删文件**：只有右键菜单里的「移到废纸篓」会动文件（且会二次确认）。
-- **自我保护**：
-  - 拒绝搬移程序自身所在的目录（所以把 app 放在某个项目目录里，那个目录不会被一键分类搬走）
-  - 拒绝把文件夹搬进它自己的子目录
-  - 跳过隐藏文件、归档根目录、以及所有整理框的目标文件夹
-- **一键分类默认弹确认框**，列出每类多少个文件、要移到哪里。
+> **从 1.0 升级**：老版本的整理框绑定的是「搬移目标文件夹」。升级后程序会把那个文件夹里
+> 已有内容一次性导入成引用（只读不改），之后该字段彻底弃用。不会再有任何搬移行为。
 
 ---
 
@@ -86,27 +91,18 @@ open "dist/桌面整理.app"
 
 ```bash
 APP="dist/桌面整理.app/Contents/MacOS/DesktopOrganizer"
-"$APP" --scan        # 只列出桌面会被怎么分类，不动任何文件
-"$APP" --selftest    # 在临时目录里跑一遍完整搬移、重名冲突、保护规则
+"$APP" --scan       # 只列出桌面会被怎么归类，不动任何文件
+"$APP" --selftest   # 断言：加完引用后文件仍在原处；去重；保护规则
+"$APP" --snaptest   # 断言：吸附几何（阈值内吸附、阈值外不吸附、引导线）
 ```
 
-设置这些环境变量会输出窗口自检信息（开发用）：
+开发用的窗口自检：
 
 ```bash
-DO_DIAG=/tmp/diag.txt            # 窗口几何 / 层级 / 拖拽通道快照
-DO_DIAG_SETTINGS=1               # 顺便验证设置面板展开收起
-DO_DIAG_PREFS=1                  # 顺便打开设置窗口
+DO_DIAG=/tmp/diag.txt      # 窗口几何 / 层级 / 拖拽通道快照
+DO_DIAG_PAGE=1             # 顺便把第一个整理框切到设置页
+DO_DIAG_MAINSETTINGS=1     # 顺便把主窗口切到设置页
 ```
-
----
-
-## 权限
-
-第一次整理桌面/文档时，macOS 会要求授权：
-
-**系统设置 › 隐私与安全性 › 文件与文件夹** → 允许「桌面整理」访问「桌面」和「文稿」。
-
-没授权的话，整理框会显示一句提示，而不是静默失败。
 
 ---
 
@@ -114,40 +110,51 @@ DO_DIAG_PREFS=1                  # 顺便打开设置窗口
 
 ```
 Sources/DesktopOrganizer/
-├── main.swift                    入口（含 --scan/--selftest 分流）
+├── main.swift                       入口（--scan / --selftest / --snaptest）
 ├── App/
-│   ├── AppDelegate.swift         菜单栏与启动流程
-│   ├── Store.swift               配置模型 + JSON 持久化 + 自动排布
-│   ├── BoxWindowManager.swift    配置 ↔ 窗口的同步
-│   ├── BoxWindowController.swift 无边框面板：拖动、缩放、拖拽落点、几何
-│   ├── BoxPanel.swift            NSPanel 子类
-│   └── PreferencesWindowController.swift
+│   ├── AppDelegate.swift            主菜单、菜单栏图标、启动流程
+│   ├── MainWindowController.swift   主管理窗口
+│   ├── Store.swift                  数据模型 + 迁移 + JSON 持久化 + 自动排布
+│   ├── BoxWindowManager.swift       配置 ↔ 窗口同步、吸附辅助
+│   ├── BoxWindowController.swift    整理框窗口：拖动/缩放/吸附/条目操作
+│   ├── BoxPanel.swift               NSPanel 子类
+│   └── SnapGuides.swift             吸附计算 + 引导线浮层
 ├── Views/
-│   ├── BoxView.swift             整理框卡片 + 文件格子
-│   ├── BoxSettingsView.swift     外观设置
-│   ├── BoxUIState.swift          面板展开状态（控制器与视图共享）
-│   ├── PreferencesView.swift     全局设置
-│   └── VisualEffectBackground.swift  NSVisualEffectView 封装（真毛玻璃）
+│   ├── MainView.swift               主窗口：整理框列表
+│   ├── SettingsPage.swift           主窗口：设置页
+│   ├── BoxView.swift                整理框：上栏悬停、条目网格
+│   ├── BoxSettingsPage.swift        整理框：设置页
+│   ├── BoxUIState.swift             页面/悬停/拖拽状态
+│   └── VisualEffectBackground.swift 真毛玻璃（自己裁圆角）
 ├── Services/
-│   ├── FileMover.swift           搬移、重名让路、跨宗卷降级、自我保护
-│   ├── Categorizer.swift         按类型分类 + 一键整理
-│   └── FolderModel.swift         文件夹监听 + 图标缓存
-└── Support/                      路径、颜色、无头自检
+│   ├── BoxItemsModel.swift          引用解析、失效检测、图标缓存
+│   ├── FileActions.swift            打开/显示/复制路径/废纸篓
+│   └── Categorizer.swift            按类型归类（只读）
+└── Support/                         路径、颜色、无头自检
+
+tools/make_icon.py                   生成像素风应用图标
 ```
 
 配置落在 `~/Library/Application Support/DesktopOrganizer/config.json`。
 
-## 图标
+---
 
-`tools/make_icon.py` 生成像素风图标，无外部依赖（用 Pillow 画）：
+## 图标
 
 ```bash
 python3 tools/make_icon.py     # 重新生成 Resources/AppIcon.icns 和预览图
 ```
 
-图案画在 32×32 的经典像素网格上，用 NEAREST 放大 25 倍保证硬边；底衬是 macOS 标准的
-squircle 轮廓（824×824 内容区），所以放进 Dock 不会显得突兀。背景用 6 段色带做渐变——
-像素画里比抖动更干净，也不会在小尺寸下变成噪点。
+图案画在 32×32 的经典像素网格上，NEAREST 放大 25 倍保证硬边；底衬是 macOS 标准的
+squircle 轮廓（824×824 内容区），放进 Dock 不会突兀。背景用 6 段色带渐变 —— 在
+32px 这个尺度上，色带比 Bayer 抖动干净得多。
 
-<img src="docs/screenshots/icon-preview.png" width="620" alt="图标各尺寸预览" />
+<img src="docs/screenshots/icon-preview.png" width="600" alt="图标各尺寸预览" />
 
+---
+
+## 权限
+
+首次拖入桌面/文稿里的文件时，macOS 会要求授权：
+
+**系统设置 › 隐私与安全性 › 文件与文件夹** → 允许「桌面整理」访问「桌面」和「文稿」。

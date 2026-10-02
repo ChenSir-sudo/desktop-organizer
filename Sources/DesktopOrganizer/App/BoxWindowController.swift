@@ -4,32 +4,30 @@ import SwiftUI
 
 final class BoxWindowController: NSObject, NSWindowDelegate {
 
-    static let settingsDelta: CGFloat = 322
     static let minSize = CGSize(width: 230, height: 210)
 
     private let store = Store.shared
     private(set) var boxID: UUID
     let panel: BoxPanel
-    private(set) var folderModel: FolderModel
-    let uiState = BoxUIState()
+    private(set) var itemsModel: BoxItemsModel
+    let ui = BoxUIState()
+
     private var hostView: NSHostingView<AnyView>
-    private var cancellables = Set<AnyCancellable>()
     private var box: BoxConfig
+    private var cancellables = Set<AnyCancellable>()
 
     // 拖动 / 缩放过程中的临时状态
     private var dragStartFrame: CGRect?
     private var dragMouseOffset: CGPoint?
     private var resizeStartFrame: CGRect?
     private var resizeStartMouse: CGPoint?
-
     private var isAdjustingFrame = false
-    private var settingsExpanded = false
     private var persistWorkItem: DispatchWorkItem?
 
     init(box: BoxConfig) {
         self.box = box
         self.boxID = box.id
-        self.folderModel = FolderModel(folder: box.folderURL)
+        self.itemsModel = BoxItemsModel(boxID: box.id)
         self.panel = BoxPanel(
             contentRect: box.frame,
             styleMask: [.borderless, .resizable, .nonactivatingPanel],
@@ -41,12 +39,6 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         configurePanel()
         buildContent()
         panel.delegate = self
-
-        // 界面状态 → 窗口尺寸：无论是点齿轮还是菜单触发，都走同一条路径
-        uiState.$settingsOpen
-            .removeDuplicates()
-            .sink { [weak self] open in self?.setSettings(open) }
-            .store(in: &cancellables)
     }
 
     // MARK: 初始化
@@ -54,26 +46,22 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
     private func configurePanel() {
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = false                 // 阴影交给 SwiftUI 画，避免方角阴影
+        panel.hasShadow = false                 // 阴影交给 SwiftUI
         panel.isMovableByWindowBackground = false
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
-        panel.standardWindowButton(.closeButton)?.isHidden = true
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .utilityWindow
         panel.minSize = Self.minSize
         panel.level = box.floatOnTop ? .floating : .normal
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
-        let safeFrame = LayoutEngine.sanitize(box.frame, minSize: Self.minSize)
-        panel.setFrame(safeFrame, display: false)
+        panel.setFrame(LayoutEngine.sanitize(box.frame, minSize: Self.minSize), display: false)
         panel.contentView = hostView
         hostView.autoresizingMask = [.width, .height]
     }
 
     private func buildContent() {
         hostView.rootView = AnyView(
-            BoxView(model: folderModel, uiState: uiState, boxID: boxID, actions: makeActions())
+            BoxView(model: itemsModel, ui: ui, boxID: boxID, actions: makeActions())
                 .environmentObject(store)
         )
     }
@@ -86,35 +74,45 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
             endResize: { [weak self] in self?.endResize() },
             addFiles: { [weak self] in self?.presentAddPanel() },
             deleteBox: { [weak self] in self?.confirmDelete() },
+            newBox: { [weak self] in self?.createSiblingBox() },
             handleDrop: { [weak self] urls in self?.handleDrop(urls) },
-            chooseFolder: { [weak self] in self?.presentFolderPicker() },
-            revealFolder: { [weak self] in
-                guard let self else { return }
-                NSWorkspace.shared.activateFileViewerSelecting([self.box.folderURL])
-            },
-            openItem: { url in
-                NSWorkspace.shared.open(url)
-            },
-            revealItem: { url in
-                NSWorkspace.shared.activateFileViewerSelecting([url])
-            },
-            moveItemToDesktop: { [weak self] url in
-                self?.move([url], into: AppPaths.desktopDirectory)
-            },
-            moveItemToTrash: { [weak self] url in
-                self?.confirmTrash(url)
-            }
+            openItem: { FileActions.open($0) },
+            revealItem: { FileActions.reveal($0) },
+            copyItemPath: { FileActions.copyPath($0) },
+            removeItem: { [weak self] id in self?.itemsModel.remove([id]) },
+            trashItem: { [weak self] url in self?.confirmTrash(url) },
+            clearItems: { [weak self] in self?.confirmClear() },
+            relocateMissing: { [weak self] in self?.itemsModel.refresh(force: true) }
         )
     }
 
     // MARK: 生命周期
 
-    func show() {
+    func show() { panel.orderFrontRegardless() }
+    func hide() { panel.orderOut(nil) }
+
+    /// 淡入出现，避免窗口「啪」地一下蹦出来。
+    func showAnimated() {
+        panel.alphaValue = 0
         panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.24
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 1
+        }
     }
 
-    func hide() {
-        panel.orderOut(nil)
+    /// 淡出后再真正隐藏。
+    func hideAnimated(completion: (() -> Void)? = nil) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            self?.panel.orderOut(nil)
+            self?.panel.alphaValue = 1
+            completion?()
+        }
     }
 
     func close() {
@@ -127,34 +125,23 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
-            panel.animator().alphaValue = 0.35
+            panel.animator().alphaValue = 0.3
         } completionHandler: { [weak self] in
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.35
+                context.duration = 0.4
                 self?.panel.animator().alphaValue = 1.0
             }
         }
     }
 
-    /// Store 变化时同步窗口状态
     func apply(_ newBox: BoxConfig) {
-        let newFolder = newBox.folderURL.standardizedFileURL
-        let folderChanged = newFolder != folderModel.folder.standardizedFileURL
         box = newBox
-
         let targetLevel: NSWindow.Level = newBox.floatOnTop ? .floating : .normal
-        if panel.level != targetLevel {
-            panel.level = targetLevel
-        }
-
-        if folderChanged {
-            folderModel = FolderModel(folder: newBox.folderURL)
-            buildContent()
-        }
+        if panel.level != targetLevel { panel.level = targetLevel }
 
         if !isAdjustingFrame, dragStartFrame == nil, resizeStartFrame == nil {
-            let target = LayoutEngine.sanitize(displayFrame(from: newBox.frame), minSize: panel.minSize)
-            if !framesAlmostEqual(panel.frame, target) {
+            let target = LayoutEngine.sanitize(newBox.frame, minSize: Self.minSize)
+            if !Self.framesAlmostEqual(panel.frame, target) {
                 isAdjustingFrame = true
                 panel.setFrame(target, display: true)
                 isAdjustingFrame = false
@@ -162,37 +149,45 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// 配置里存的是「设置面板收起」时的基准帧；展开时要在显示帧上补上高度差，顶边保持不动。
-    private func displayFrame(from base: CGRect) -> CGRect {
-        var frame = base
-        if settingsExpanded {
-            frame.size.height += Self.settingsDelta
-            frame.origin.y -= Self.settingsDelta
-        }
-        return frame
-    }
-
-    // MARK: 拖动
+    // MARK: 拖动（带吸附与引导线）
 
     private func continueDrag() {
         guard !isAdjustingFrame else { return }
         let mouse = NSEvent.mouseLocation
+
         if dragStartFrame == nil {
             let current = panel.frame
             dragStartFrame = current
             dragMouseOffset = CGPoint(x: mouse.x - current.origin.x, y: mouse.y - current.origin.y)
+            ui.isDragging = true
         }
-        guard let offset = dragMouseOffset else { return }
-        var frame = panel.frame
-        frame.origin.x = mouse.x - offset.x
-        frame.origin.y = mouse.y - offset.y
-        panel.setFrame(frame, display: true)
+        guard let offset = dragMouseOffset, let start = dragStartFrame else { return }
+
+        let proposed = CGRect(
+            x: mouse.x - offset.x,
+            y: mouse.y - offset.y,
+            width: start.width,
+            height: start.height
+        )
+
+        let screen = panel.screen ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? proposed
+        let others = BoxWindowManager.shared.frames(excluding: boxID)
+        let snapped = SnapEngine.snap(moving: proposed, others: others, screen: visible)
+
+        panel.setFrame(CGRect(origin: snapped.origin, size: proposed.size), display: true)
+
+        if let screen {
+            BoxWindowManager.shared.showGuides(snapped.guides, on: screen)
+        }
     }
 
     private func endDrag() {
         guard dragStartFrame != nil else { return }
         dragStartFrame = nil
         dragMouseOffset = nil
+        ui.isDragging = false
+        BoxWindowManager.shared.hideGuides()
         persistFrame()
     }
 
@@ -209,11 +204,9 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
 
         let dx = mouse.x - mouse0.x
         let dy = mouse.y - mouse0.y
-        let minHeight = Self.minSize.height + (settingsExpanded ? Self.settingsDelta : 0)
-
         var frame = start
         let newWidth = max(Self.minSize.width, start.width + dx)
-        let newHeight = max(minHeight, start.height - dy)
+        let newHeight = max(Self.minSize.height, start.height + dy)
         frame.size = CGSize(width: newWidth, height: newHeight)
         frame.origin.x = start.minX
         frame.origin.y = start.maxY - newHeight      // 固定左上角
@@ -227,40 +220,6 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         persistFrame()
     }
 
-    // MARK: 外观设置面板
-
-    func toggleSettingsPanel() {
-        uiState.settingsOpen.toggle()
-    }
-
-    var isSettingsPanelOpen: Bool { settingsExpanded }
-
-    private func setSettings(_ open: Bool) {
-        guard settingsExpanded != open else { return }
-        settingsExpanded = open
-        isAdjustingFrame = true
-        panel.minSize = CGSize(
-            width: Self.minSize.width,
-            height: Self.minSize.height + (open ? Self.settingsDelta : 0)
-        )
-
-        var frame = panel.frame
-        if open {
-            frame.size.height += Self.settingsDelta
-            frame.origin.y -= Self.settingsDelta
-            NSApp.activate(ignoringOtherApps: true)
-        } else {
-            frame.size.height = max(Self.minSize.height, frame.size.height - Self.settingsDelta)
-            frame.origin.y += Self.settingsDelta
-        }
-        panel.setFrame(frame, display: true, animate: true)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            self?.isAdjustingFrame = false
-            self?.persistFrame()
-        }
-    }
-
     // MARK: 位置持久化
 
     private func schedulePersistFrame() {
@@ -272,113 +231,75 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
     }
 
     private func persistFrame() {
-        var frame = panel.frame
-        if settingsExpanded {
-            // 存的是「收起设置」时的高度，重新打开时才能还原
-            frame.size.height -= Self.settingsDelta
-            frame.origin.y += Self.settingsDelta
-        }
+        let frame = panel.frame
         store.update(id: boxID) { $0.frame = frame }
     }
 
-    private func framesAlmostEqual(_ a: CGRect, _ b: CGRect) -> Bool {
-        abs(a.origin.x - b.origin.x) < 0.5 &&
-        abs(a.origin.y - b.origin.y) < 0.5 &&
-        abs(a.width - b.width) < 0.5 &&
-        abs(a.height - b.height) < 0.5
+    private static func framesAlmostEqual(_ a: CGRect, _ b: CGRect) -> Bool {
+        abs(a.origin.x - b.origin.x) < 0.5 && abs(a.origin.y - b.origin.y) < 0.5 &&
+        abs(a.width - b.width) < 0.5 && abs(a.height - b.height) < 0.5
     }
 
-    // MARK: 文件操作
+    // MARK: 条目操作（全部只加引用，不搬文件）
 
     private func handleDrop(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        let result = FileMover.move(urls, into: box.folderURL)
-        folderModel.refresh(force: true)
-
-        if !result.failures.isEmpty {
-            let alert = NSAlert()
-            alert.alertStyle = .warning
-            alert.messageText = "有 \(result.failures.count) 个文件没有移动成功"
-            alert.informativeText = result.failures.prefix(8)
-                .map { "\($0.url.lastPathComponent)：\($0.reason)" }
-                .joined(separator: "\n")
-            alert.addButton(withTitle: "好")
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
-        }
-    }
-
-    private func move(_ urls: [URL], into folder: URL) {
-        _ = FileMover.move(urls, into: folder)
-        folderModel.refresh(force: true)
-    }
-
-    private func confirmTrash(_ url: URL) {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "把「\(url.lastPathComponent)」移到废纸篓？"
-        alert.informativeText = "可以从废纸篓恢复。"
-        alert.addButton(withTitle: "移到废纸篓")
-        alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
-        folderModel.refresh(force: true)
+        withAnimation { _ = itemsModel.add(urls) }
     }
 
     private func presentAddPanel() {
-        NSApp.activate(ignoringOtherApps: true)
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = true
-        panel.prompt = "整理"
-        panel.message = "选择要移入「\(box.name)」的内容"
-        panel.directoryURL = AppPaths.desktopDirectory
-        if panel.runModal() == .OK {
-            handleDrop(panel.urls)
-        }
+        let urls = FileActions.pickFiles(
+            message: "选择要收进「\(box.name)」的内容（不会移动文件）",
+            startingAt: nil
+        )
+        guard !urls.isEmpty else { return }
+        handleDrop(urls)
     }
 
-    private func presentFolderPicker() {
-        NSApp.activate(ignoringOtherApps: true)
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "使用此文件夹"
-        panel.message = "选择「\(box.name)」对应的文件夹"
-        panel.directoryURL = box.folderURL
-        if panel.runModal() == .OK, let url = panel.url {
-            store.update(id: boxID) { $0.folderPath = url.path }
+    private func createSiblingBox() {
+        let newBox = Store.shared.addBox()
+        BoxWindowManager.shared.sync(Store.shared.boxes)
+        BoxWindowManager.shared.focus(id: newBox.id)
+    }
+
+    private func confirmClear() {
+        let count = itemsModel.items.count
+        guard count > 0 else { return }
+        guard FileActions.confirm(
+            title: "清空「\(box.name)」里的 \(count) 个条目？",
+            message: "只是从整理框里移除引用，磁盘上的文件不会受到任何影响。",
+            confirmTitle: "清空"
+        ) else { return }
+        withAnimation { itemsModel.removeAll() }
+    }
+
+    private func confirmTrash(_ url: URL) {
+        guard FileActions.confirm(
+            title: "把「\(url.lastPathComponent)」移到废纸篓？",
+            message: "这是整个程序里唯一会动文件的操作。可以从废纸篓恢复。",
+            confirmTitle: "移到废纸篓"
+        ) else { return }
+        if FileActions.moveToTrash(url) {
+            itemsModel.refresh(force: true)
         }
     }
 
     private func confirmDelete() {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "删除整理框「\(box.name)」？"
-        alert.informativeText = "框里的 \(folderModel.totalCount) 个文件不会被删除，仍然保存在：\n\(box.folderURL.path)"
-        alert.addButton(withTitle: "删除整理框")
-        alert.addButton(withTitle: "取消")
-        if alert.runModal() == .alertFirstButtonReturn {
-            Store.shared.removeBox(id: boxID)
-        }
+        let count = itemsModel.items.count
+        let message = count == 0
+            ? "框里没有条目。"
+            : "框里的 \(count) 个条目只是引用，磁盘上的文件不会受到任何影响。"
+        guard FileActions.confirm(
+            title: "删除整理框「\(box.name)」？",
+            message: message,
+            confirmTitle: "删除整理框"
+        ) else { return }
+        Store.shared.removeBox(id: boxID)
     }
 
     // MARK: NSWindowDelegate
 
-    func windowDidMove(_ notification: Notification) {
-        schedulePersistFrame()
-    }
-
-    func windowDidResize(_ notification: Notification) {
-        schedulePersistFrame()
-    }
-
-    func windowDidEndLiveResize(_ notification: Notification) {
-        persistFrame()
-    }
+    func windowDidMove(_ notification: Notification) { schedulePersistFrame() }
+    func windowDidResize(_ notification: Notification) { schedulePersistFrame() }
+    func windowDidEndLiveResize(_ notification: Notification) { persistFrame() }
 }
