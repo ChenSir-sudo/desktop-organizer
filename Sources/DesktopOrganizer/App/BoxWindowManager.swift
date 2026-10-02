@@ -42,6 +42,8 @@ final class BoxWindowManager {
                 defer { session.finish() }
                 guard !session.handled else { return }
                 guard !self.containsScreenPoint(NSEvent.mouseLocation) else { return }
+                // 从框里摘掉即可 —— 文件在拖拽开始时就已恢复显示，
+                // 若被访达移进了别的目录，它现在是可见的，不需要我们再动。
                 Store.shared.removeItems(Set(payload.itemIDs), from: payload.boxID)
                 self.refreshAll()
                 self.removeFinderClippingFiles(matching: payload)

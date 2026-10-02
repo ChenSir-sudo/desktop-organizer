@@ -38,9 +38,16 @@ final class BoxContentView: NSView {
 
     // MARK: NSDraggingDestination
 
+    /// 是不是整理框自己发起的拖拽。只看**类型在不在**，不看数据能不能读到 ——
+    /// 数据是懒加载的，拖拽刚进入时还不一定读得到。
+    private func isInternalDrag(_ sender: NSDraggingInfo) -> Bool {
+        sender.draggingPasteboard.types?.contains(DragPayload.pasteboardType) ?? false
+    }
+
     private func acceptedOperation(_ sender: NSDraggingInfo) -> NSDragOperation {
+        // 内部拖拽优先：它也带文件 URL，不能被当成外部拖入
+        if isInternalDrag(sender) { return .move }
         if hasFileURLs(sender) { return .copy }
-        if DragPayload.read(from: sender.draggingPasteboard) != nil { return .move }
         return []
     }
 
@@ -75,14 +82,14 @@ final class BoxContentView: NSView {
         let folder = folderTile(at: point)?.url
 
         // 内部条目：放进文件夹 / 重排 / 跨框转移
-        if let payload = DragPayload.read(from: pasteboard) {
+        if isInternalDrag(sender), let payload = DragPayload.read(from: pasteboard) {
             let index = insertionIndex(at: point)
             log("performDragOperation 内部条目 \(payload.itemIDs.count) 项 落点=\(NSStringFromPoint(point)) 下标=\(index) 目标文件夹=\(folder?.lastPathComponent ?? "无")")
             onItemDrop?(payload, index, folder)
             return true
         }
 
-        // 外部文件
+        // 外部文件（或内部拖拽但数据没读出来 —— 退化成按文件处理）
         let urls = fileURLs(from: pasteboard)
         log("performDragOperation 外部文件 \(urls.count) 个 落点=\(NSStringFromPoint(point)) 目标文件夹=\(folder?.lastPathComponent ?? "无") -> \(urls.map(\.lastPathComponent))")
         guard !urls.isEmpty else { return false }

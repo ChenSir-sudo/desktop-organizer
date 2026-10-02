@@ -90,11 +90,13 @@ enum Commands {
 
     static func reorder(in boxID: UUID, itemIDs: [UUID], to index: Int) {
         Store.shared.moveItems(in: boxID, itemIDs: itemIDs, to: index)
+        rehideAfterDrop(itemIDs, in: boxID)
         BoxWindowManager.shared.refresh(boxID: boxID)
     }
 
     static func transfer(itemIDs: [UUID], from source: UUID, to target: UUID, at index: Int) {
         guard Store.shared.transferItems(itemIDs, from: source, to: target, at: index) else { return }
+        rehideAfterDrop(itemIDs, in: target)
         BoxWindowManager.shared.refresh(boxID: source)
         BoxWindowManager.shared.refresh(boxID: target)
     }
@@ -117,6 +119,26 @@ enum Commands {
                 title: "有 \(outcome.failures.count) 项没能移入「\(folder.lastPathComponent)」",
                 message: outcome.failures.map { "\($0.url.lastPathComponent)：\($0.reason)" }.joined(separator: "\n")
             )
+        }
+    }
+
+    /// 拖拽开始前把条目对应的文件恢复显示。
+    ///
+    /// 必须这么做：拖到整理框外面时是**访达**在搬文件，而隐藏标志会跟着文件一起
+    /// 搬走 —— 结果就是文件进了目标文件夹却还是隐藏的，在访达里根本看不见。
+    /// 所以拖拽一开始就先恢复显示；如果最后落回某个整理框，再重新隐藏。
+    static func unhideForDragging(_ itemIDs: [UUID], in boxID: UUID) {
+        guard let box = Store.shared.box(id: boxID) else { return }
+        for item in box.items where itemIDs.contains(item.id) {
+            Store.shared.setPathHidden(false, path: item.path)
+        }
+    }
+
+    /// 拖拽落回整理框了，把隐藏状态恢复回来（整理框里的条目就该在原位置隐藏）。
+    static func rehideAfterDrop(_ itemIDs: [UUID], in boxID: UUID) {
+        guard let box = Store.shared.box(id: boxID) else { return }
+        for item in box.items where itemIDs.contains(item.id) {
+            Store.shared.setItemHidden(true, itemID: item.id, in: boxID)
         }
     }
 

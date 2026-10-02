@@ -244,7 +244,11 @@ struct BoxView: View {
                             let ids = dragSelection(for: item)
                             let payload = DragPayload(boxID: boxID, itemIDs: ids)
                             session.begin(payload)
-                            return DragPayload.provider(for: payload)
+                            // 先恢复显示：万一最后是访达在搬文件，隐藏标志会跟着文件走
+                            Commands.unhideForDragging(ids, in: boxID)
+                            // 带上对应的文件 URL：拖到框外时访达才能把文件移进目标目录
+                            let urls = model.items.filter { ids.contains($0.id) }.map(\.url)
+                            return DragPayload.provider(for: payload, fileURLs: urls)
                         } preview: {
                             dragPreview(for: item)
                         }

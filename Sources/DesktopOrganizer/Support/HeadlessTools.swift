@@ -362,6 +362,22 @@ enum HeadlessTools {
             check("1.0 格式的 BoxConfig 能解码", false)
         }
 
+        // 回归：内部拖拽载荷必须能往返
+        // （真实的 NSPasteboard 往返没法在这里测 —— NSItemProvider 不实现
+        //  NSPasteboardWriting，写不进 pasteboard。这里测编解码和类型标识。）
+        print("")
+        print("== 内部拖拽载荷 ==")
+        let idA = UUID(), idB = UUID(), dragBox = UUID()
+        let payload = DragPayload(boxID: dragBox, itemIDs: [idA, idB])
+        check("编码后能解回框 ID", DragPayload(string: payload.encoded)?.boxID == dragBox)
+        check("编码后能解回两个条目",
+              DragPayload(string: payload.encoded)?.itemIDs == [idA, idB])
+        check("空条目解不出来", DragPayload(string: "\(dragBox.uuidString)|") == nil)
+        check("乱码解不出来", DragPayload(string: "not-a-payload") == nil)
+        check("粘贴板类型与载荷类型标识一致",
+              DragPayload.pasteboardType.rawValue == DragPayload.typeIdentifier)
+
+
         print("")
         print(failures == 0 ? "自检结束：全部通过 ✓" : "自检结束：有 \(failures) 项失败 ✗")
     }

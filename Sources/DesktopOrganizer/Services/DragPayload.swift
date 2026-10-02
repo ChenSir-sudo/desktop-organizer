@@ -42,18 +42,51 @@ struct DragPayload: Equatable {
 
     // MARK: 拖拽源（SwiftUI 层用）
 
-    static func provider(for payload: DragPayload) -> NSItemProvider {
+    /// 拖拽源。
+    ///
+    /// 可见性必须是 .all：设成 .ownProcess 时数据**根本不写到粘贴板上**，
+    /// 连本进程的落点都读不到（日志里表现为 draggingEntered 直接「拒绝」，
+    /// 框内拖拽全部失效）。
+    ///
+    /// 同时把文件的 URL 也放进去 —— 这样拖到整理框**外面**的目录时，
+    /// 访达会把文件真的移进去，不需要我们自己去找目标目录。
+    static func provider(for payload: DragPayload, fileURLs: [URL]) -> NSItemProvider {
         let provider = NSItemProvider()
+
         let data = Data(payload.encoded.utf8)
-        // .ownProcess：只有本进程能读。整理框内部拖拽不需要跨进程可见，
-        // 访达拿不到数据就不会把它当文件内容写到桌面上。
         provider.registerDataRepresentation(
             forTypeIdentifier: typeIdentifier,
-            visibility: .ownProcess
+            visibility: .all
         ) { completion in
             completion(data, nil)
             return nil
         }
+
+        // 单个文件：标准的 public.file-url
+        if let first = fileURLs.first {
+            provider.registerDataRepresentation(
+                forTypeIdentifier: "public.file-url",
+                visibility: .all
+            ) { completion in
+                completion(first.dataRepresentation, nil)
+                return nil
+            }
+        }
+
+        // 多个文件：访达仍然认的旧式文件名列表（属性列表数组）
+        let paths = fileURLs.map(\.path)
+        if paths.count > 1,
+           let plist = try? PropertyListSerialization.data(
+               fromPropertyList: paths, format: .binary, options: 0) {
+            provider.registerDataRepresentation(
+                forTypeIdentifier: "NSFilenamesPboardType",
+                visibility: .all
+            ) { completion in
+                completion(plist, nil)
+                return nil
+            }
+        }
+
         return provider
     }
 }
