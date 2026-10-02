@@ -1,275 +1,465 @@
 import AppKit
+import Combine
+import SwiftUI
 
-/// 整理框窗口。
-///
-/// 新方案里它**不是装文件的容器**，而是桌面上的一块**边框区域**：
-/// - 窗口完全透明，只画一圈边框和标题（`BoxFrameView`）
-/// - 中间不接收鼠标 → 用户照样能在框内正常拖动、双击、右键桌面图标
-/// - 只有**边框那一圈**能抓来拖动，四角能缩放
-/// - 挂在桌面图层：壁纸与图标之上、普通应用窗口之下
-///
-/// **程序不碰用户的文件。** 这里唯一会写的只有窗口坐标（存进配置）；
-/// 摆图标位置只发生在用户主动点「整理框内图标」时，走 `DesktopIcons`。
-final class BoxWindowController {
+final class BoxWindowController: NSObject, NSWindowDelegate {
 
-    static let minSize = CGSize(width: 180, height: 140)
+    static let minSize = CGSize(width: 230, height: 210)
 
-    let panel: BoxPanel
-    private let frameView = BoxFrameView(frame: .zero)
+    /// 不置顶时用的层级。
+    ///
+    /// 一开始这里用的是 `kCGDesktopIconWindowLevel`（桌面图标层），想让框永远待在
+    /// 所有应用窗口下面。结果是**那个层级属于桌面本身**：一旦框不是创建时的最前状态，
+    /// 鼠标点击和文件拖拽都不会投递给它 —— 看得见却完全够不着。
+    /// 所以回到普通窗口层：不强行压在最上面，但和其它窗口一样可点、可拖、可接收拖入。
+    static let normalLevel: NSWindow.Level = .normal
+
+    private let store = Store.shared
     private(set) var boxID: UUID
+    let panel: BoxPanel
+    private(set) var itemsModel: BoxItemsModel
+    let ui = BoxUIState()
 
+    private var hostView: NSHostingView<AnyView>
+    private let dropContainer = BoxContentView(frame: .zero)
     private var box: BoxConfig
-    private var dragOrigin: CGPoint?
+    private var cancellables = Set<AnyCancellable>()
+
+    // 拖动 / 缩放过程中的临时状态
+    private var dragStartFrame: CGRect?
     private var dragMouseOffset: CGPoint?
-    private var resizeEdge: ResizeEdge?
     private var resizeStartFrame: CGRect?
     private var resizeStartMouse: CGPoint?
-    private var interactTimer: Timer?
+    private var isAdjustingFrame = false
+    private var persistWorkItem: DispatchWorkItem?
     private var summonWorkItem: DispatchWorkItem?
-
-    /// 边框的图层：在桌面图标之上（框能画在图标上），又在普通窗口之下（不挡工作）。
-    static var frameLevel: NSWindow.Level {
-        NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
-    }
-
-    enum ResizeEdge { case topLeft, topRight, bottomLeft, bottomRight }
 
     init(box: BoxConfig) {
         self.box = box
         self.boxID = box.id
-
-        panel = BoxPanel(
-            contentRect: LayoutEngine.sanitize(box.frame, minSize: Self.minSize),
-            styleMask: [.borderless, .nonactivatingPanel],
+        self.itemsModel = BoxItemsModel(boxID: box.id)
+        self.panel = BoxPanel(
+            contentRect: box.frame,
+            styleMask: [.borderless, .resizable, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
+        self.hostView = NSHostingView(rootView: AnyView(EmptyView()))
+        super.init()
+        configurePanel()
+        buildContent()
+        panel.delegate = self
+    }
+
+    // MARK: 初始化
+
+    private func configurePanel() {
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = false
+        panel.hasShadow = false                 // 阴影交给 SwiftUI
         panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
-        panel.level = Self.frameLevel
+        panel.isReleasedWhenClosed = false
+        panel.animationBehavior = .utilityWindow
+        panel.minSize = Self.minSize
+        panel.level = box.floatOnTop ? .floating : Self.normalLevel
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        panel.setFrame(LayoutEngine.sanitize(box.frame, minSize: Self.minSize), display: false)
 
-        frameView.frame = CGRect(origin: .zero, size: panel.frame.size)
-        frameView.autoresizingMask = [.width, .height]
-        frameView.controller = self
-        panel.contentView = frameView
+        // 内容视图是负责接收外部拖拽的 AppKit 视图；SwiftUI 宿主视图铺在它上面。
+        // SwiftUI 那边不再注册 file-url（只保留内部拖拽用的自定义类型），
+        // 所以外部文件一定会落到这层。
+        // 层级：容器 > BoxContentView（在上，负责拖拽源/落点、条目点选） > SwiftUI 宿主视图
+        // BoxContentView 的 hitTest 只在「左键按在条目格子上」时接管，
+        // 其余事件放行给下面的宿主视图，所以悬浮、右键菜单等交互不受影响。
+        let container = NSView(frame: CGRect(origin: .zero, size: panel.frame.size))
+        container.autoresizingMask = [.width, .height]
 
-        apply(box)
-    }
+        hostView.autoresizingMask = [.width, .height]
+        hostView.frame = container.bounds
+        container.addSubview(hostView)
 
-    // MARK: 与 Store 同步
+        dropContainer.autoresizingMask = [.width, .height]
+        dropContainer.frame = container.bounds
+        container.addSubview(dropContainer)
 
-    func apply(_ newBox: BoxConfig) {
-        box = newBox
-        frameView.title = newBox.name
-        frameView.accent = NSColor(hex: newBox.accentHex)
-        let target = LayoutEngine.sanitize(newBox.frame, minSize: Self.minSize)
-        if panel.frame != target {
-            panel.setFrame(target, display: true)
+        panel.contentView = container
+
+        // 外部文件：落在文件夹图标上就移进那个文件夹，否则加入整理框
+        dropContainer.onFileDrop = { [weak self] urls, _, folder in
+            guard let self else { return }
+            if let folder {
+                let outcome = FileActions.move(urls, into: folder)
+                BoxWindowManager.shared.refreshAll()
+                if !outcome.failures.isEmpty {
+                    FileActions.info(
+                        title: "有 \(outcome.failures.count) 项没能移入「\(folder.lastPathComponent)」",
+                        message: outcome.failures.map { "\($0.url.lastPathComponent)：\($0.reason)" }.joined(separator: "\n")
+                    )
+                }
+            } else {
+                self.handleDrop(urls)
+            }
         }
-        refreshMemberCount()
-    }
 
-    /// 框里现在有多少个桌面图标 —— 实时按坐标算，**不存任何东西**。
-    func refreshMemberCount() {
-        let frame = panel.frame
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let icons = DesktopIcons.readAll()
-            let count = DesktopArranger.icons(in: frame, from: icons).count
-            DispatchQueue.main.async { self?.frameView.memberCount = count }
+        // 内部条目：放进文件夹 / 重排 / 跨框转移
+        dropContainer.onItemDrop = { [weak self] payload, index, folder in
+            guard let self else { return }
+            DragSession.shared.handled = true
+            defer { DragSession.shared.finish() }
+
+            if let folder {
+                Commands.moveItemsIntoFolder(payload.itemIDs, in: payload.boxID, folder: folder)
+            } else if payload.boxID == self.boxID {
+                Commands.reorder(in: self.boxID, itemIDs: payload.itemIDs, to: index)
+            } else {
+                Commands.transfer(itemIDs: payload.itemIDs, from: payload.boxID, to: self.boxID, at: index)
+            }
+        }
+
+        dropContainer.onTargetingChanged = { [weak self] targeting in
+            self?.ui.isDropTargeted = targeting
+        }
+        dropContainer.onFolderTargetChanged = { id in
+            DragSession.shared.folderDropTargetID = id
+        }
+        dropContainer.boxID = boxID
+        dropContainer.eventForwarder = hostView
+        dropContainer.selectionProvider = { [weak self] in self?.ui.selectedItemIDs ?? [] }
+        dropContainer.onSelectionChange = { [weak self] id, flags in
+            self?.applySelection(to: id, flags: flags)
+        }
+        dropContainer.onClearSelection = { [weak self] in
+            self?.ui.selectedItemIDs.removeAll()
+        }
+        dropContainer.onOpenItem = { id in
+            guard let item = Store.shared.box(id: self.boxID)?.items.first(where: { $0.id == id }),
+                  FileManager.default.fileExists(atPath: item.path) else { return }
+            FileActions.open(item.url)
+        }
+        dropContainer.onDragWillBegin = { ids in
+            // 先恢复显示：拖到框外是访达在搬文件，隐藏标志会跟着文件走
+            Commands.unhideForDragging(ids, in: self.boxID)
         }
     }
 
-    // MARK: 显隐
+    private func buildContent() {
+        hostView.rootView = AnyView(
+            BoxView(model: itemsModel, ui: ui, boxID: boxID, actions: makeActions())
+                .environmentObject(store)
+        )
+    }
 
+    private func makeActions() -> BoxActions {
+        BoxActions(
+            dragByMouse: { [weak self] in self?.continueDrag() },
+            endDrag: { [weak self] in self?.endDrag() },
+            resizeByMouse: { [weak self] in self?.continueResize() },
+            endResize: { [weak self] in self?.endResize() },
+            addFiles: { [weak self] in self?.presentAddPanel() },
+            deleteBox: { [weak self] in self?.confirmDelete() },
+            newBox: { [weak self] in self?.createSiblingBox() },
+            handleDrop: { [weak self] urls in self?.handleDrop(urls) },
+            openItem: { FileActions.open($0) },
+            revealItem: { [weak self] url in self?.revealKeepingVisibility(url) },
+            copyItemPath: { FileActions.copyPath($0) },
+            openInEditor: { FileActions.openInCodeEditor($0) },
+            editorName: FileActions.preferredEditorName ?? "",
+            openInTerminal: { FileActions.openInTerminal($0) },
+            removeItem: { Commands.remove([$0], from: self.boxID) },
+            trashItem: { [weak self] url in self?.confirmTrash(url) },
+            toggleItemHidden: { id, hidden in
+                Commands.toggleHidden(hidden, itemID: id, in: self.boxID)
+            },
+            updateTileFrames: { [weak self] tiles, order in
+                guard let self else { return }
+                let changed = self.dropContainer.tiles.count != tiles.count
+                self.dropContainer.tiles = tiles
+                self.dropContainer.orderedItemIDs = order
+                if changed {
+                    let folders = tiles.values.filter(\.isDirectory).count
+                    self.dropContainer.note("几何上报 \(tiles.count) 个格子（其中文件夹 \(folders) 个）")
+                }
+            },
+            clearItems: { [weak self] in self?.confirmClear() },
+            removeBroken: { Commands.removeBrokenReferences() }
+        )
+    }
+
+    // MARK: 生命周期
+
+    func show() { panel.orderFrontRegardless() }
+    func hide() { panel.orderOut(nil) }
+
+    /// 淡入出现，避免窗口「啪」地一下蹦出来。
     func showAnimated() {
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.22
+            context.duration = 0.24
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().alphaValue = 1
         }
     }
 
-    func hideAnimated() {
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.16
+    /// 淡出后再真正隐藏。
+    func hideAnimated(completion: (() -> Void)? = nil) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             panel.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        } completionHandler: { [weak self] in
             self?.panel.orderOut(nil)
-        })
+            self?.panel.alphaValue = 1
+            completion?()
+        }
     }
 
-    func close() { panel.orderOut(nil) }
+    func close() {
+        panel.delegate = nil
+        panel.orderOut(nil)
+        panel.close()
+    }
 
-    /// 把框临时提到最前几秒，方便找到它，然后落回桌面图层。
+    /// 把整理框临时提到最前，几秒后再落回配置的层级。
+    /// 用于「定位」：在框被别的窗口盖住时把它捞出来。
     func summon() {
+        let configured = box.floatOnTop ? NSWindow.Level.floating : Self.normalLevel
         summonWorkItem?.cancel()
-        let original = Self.frameLevel
         panel.level = .floating
         panel.orderFrontRegardless()
-        frameView.isSelected = true
+        flash()
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.panel.level = original
-            self.frameView.isSelected = false
+            self.panel.level = configured
+            // 落回桌面层后仍要保证它是该层里靠前的
             self.panel.orderFrontRegardless()
         }
         summonWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: item)
     }
 
-    // MARK: 拖动 / 缩放
-
-    /// 从边框按下：判断是拖动还是缩放。
-    func beginInteraction(at point: CGPoint) {
-        let grip = BoxFrameView.edgeGrip
-        let top = point.y > panel.frame.height - grip
-        let bottom = point.y < grip
-        let left = point.x < grip
-        let right = point.x > panel.frame.width - grip
-
-        if (top || bottom) && left {
-            resizeEdge = top ? .topLeft : .bottomLeft
-            resizeStartFrame = panel.frame
-            resizeStartMouse = NSEvent.mouseLocation
-        } else if (top || bottom) && right {
-            resizeEdge = top ? .topRight : .bottomRight
-            resizeStartFrame = panel.frame
-            resizeStartMouse = NSEvent.mouseLocation
-        } else {
-            dragOrigin = panel.frame.origin
-            dragMouseOffset = NSEvent.mouseLocation
-        }
-        startInteractionTimer()
-    }
-
-    /// 用定时器跟随鼠标：拖动/缩放期间拿不到鼠标捕获，轮询最稳。
-    private func startInteractionTimer() {
-        interactTimer?.invalidate()
-        let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] timer in
-            guard let self else { timer.invalidate(); return }
-            if NSEvent.pressedMouseButtons == 0 {
-                timer.invalidate()
-                self.interactTimer = nil
-                self.endInteraction()
-                return
+    func flash() {
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.12
+            panel.animator().alphaValue = 0.3
+        } completionHandler: { [weak self] in
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.4
+                self?.panel.animator().alphaValue = 1.0
             }
-            self.continueInteraction()
         }
-        RunLoop.main.add(timer, forMode: .common)
-        interactTimer = timer
     }
 
-    private func continueInteraction() {
-        if resizeEdge != nil { continueResize() } else if dragOrigin != nil { continueDrag() }
+    func apply(_ newBox: BoxConfig) {
+        box = newBox
+        let targetLevel: NSWindow.Level = newBox.floatOnTop ? .floating : Self.normalLevel
+        if panel.level != targetLevel { panel.level = targetLevel }
+
+        if !isAdjustingFrame, dragStartFrame == nil, resizeStartFrame == nil {
+            let target = LayoutEngine.sanitize(newBox.frame, minSize: Self.minSize)
+            if !Self.framesAlmostEqual(panel.frame, target) {
+                isAdjustingFrame = true
+                panel.setFrame(target, display: true)
+                isAdjustingFrame = false
+            }
+        }
     }
 
-    private func endInteraction() {
-        let wasActive = dragOrigin != nil || resizeEdge != nil
-        dragOrigin = nil
+    // MARK: 拖动（带吸附与引导线）
+
+    private func continueDrag() {
+        guard !isAdjustingFrame else { return }
+        let mouse = NSEvent.mouseLocation
+
+        if dragStartFrame == nil {
+            let current = panel.frame
+            dragStartFrame = current
+            dragMouseOffset = CGPoint(x: mouse.x - current.origin.x, y: mouse.y - current.origin.y)
+            ui.isDragging = true
+        }
+        guard let offset = dragMouseOffset, let start = dragStartFrame else { return }
+
+        let proposed = CGRect(
+            x: mouse.x - offset.x,
+            y: mouse.y - offset.y,
+            width: start.width,
+            height: start.height
+        )
+
+        let screen = panel.screen ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? proposed
+        let others = BoxWindowManager.shared.frames(excluding: boxID)
+        let snapped = SnapEngine.snap(moving: proposed, others: others, screen: visible)
+
+        panel.setFrame(CGRect(origin: snapped.origin, size: proposed.size), display: true)
+
+        if let screen {
+            BoxWindowManager.shared.showGuides(snapped.guides, on: screen)
+        }
+    }
+
+    private func endDrag() {
+        guard dragStartFrame != nil else { return }
+        dragStartFrame = nil
         dragMouseOffset = nil
-        resizeEdge = nil
+        ui.isDragging = false
+        BoxWindowManager.shared.hideGuides()
+        persistFrame()
+    }
+
+    // MARK: 缩放
+
+    private func continueResize() {
+        guard !isAdjustingFrame else { return }
+        let mouse = NSEvent.mouseLocation
+        if resizeStartFrame == nil {
+            resizeStartFrame = panel.frame
+            resizeStartMouse = mouse
+        }
+        guard let start = resizeStartFrame, let mouse0 = resizeStartMouse else { return }
+
+        let dx = mouse.x - mouse0.x
+        let dy = mouse.y - mouse0.y
+        var frame = start
+        let newWidth = max(Self.minSize.width, start.width + dx)
+        // 屏幕坐标 y 向上：往下拖 dy 为负，高度应当变大，所以是减不是加
+        let newHeight = max(Self.minSize.height, start.height - dy)
+        frame.size = CGSize(width: newWidth, height: newHeight)
+        frame.origin.x = start.minX
+        frame.origin.y = start.maxY - newHeight      // 固定左上角
+
+        // 缩放吸附：右边缘和下边缘对齐到屏幕 / 其它整理框，并显示引导线
+        let screen = panel.screen ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? frame
+        let others = BoxWindowManager.shared.frames(excluding: boxID)
+        let snapped = SnapEngine.snapResize(
+            frame: frame, others: others, screen: visible, minSize: Self.minSize
+        )
+        frame.size = snapped.size
+        frame.origin.y = start.maxY - snapped.size.height   // 依旧固定左上角
+
+        panel.setFrame(frame, display: true)
+
+        if let screen, !snapped.guides.isEmpty {
+            BoxWindowManager.shared.showGuides(snapped.guides, on: screen)
+        } else {
+            BoxWindowManager.shared.hideGuides()
+        }
+    }
+
+    private func endResize() {
+        guard resizeStartFrame != nil else { return }
         resizeStartFrame = nil
         resizeStartMouse = nil
         BoxWindowManager.shared.hideGuides()
-        if wasActive {
-            persistFrame()
-            refreshMemberCount()
-        }
+        persistFrame()
     }
 
-    private func continueDrag() {
-        guard let start = dragOrigin, let mouse0 = dragMouseOffset else { return }
-        let mouse = NSEvent.mouseLocation
-        let proposed = CGRect(x: start.x + (mouse.x - mouse0.x),
-                              y: start.y + (mouse.y - mouse0.y),
-                              width: panel.frame.width, height: panel.frame.height)
-        let screen = panel.screen ?? NSScreen.main
-        let snapped = SnapEngine.snap(
-            moving: proposed,
-            others: BoxWindowManager.shared.frames(excluding: boxID),
-            screen: screen?.visibleFrame ?? proposed
-        )
-        panel.setFrame(CGRect(origin: snapped.origin, size: proposed.size), display: true)
-        if let screen, !snapped.guides.isEmpty {
-            BoxWindowManager.shared.showGuides(snapped.guides, on: screen)
-        } else {
-            BoxWindowManager.shared.hideGuides()
-        }
-    }
+    // MARK: 位置持久化
 
-    private func continueResize() {
-        guard let edge = resizeEdge, let start = resizeStartFrame, let mouse0 = resizeStartMouse else { return }
-        let mouse = NSEvent.mouseLocation
-        let dx = mouse.x - mouse0.x
-        let dy = mouse.y - mouse0.y
-
-        var frame = start
-        switch edge {
-        case .topRight:
-            frame.size.width = max(Self.minSize.width, start.width + dx)
-            frame.size.height = max(Self.minSize.height, start.height + dy)
-        case .topLeft:
-            frame.size.width = max(Self.minSize.width, start.width - dx)
-            frame.size.height = max(Self.minSize.height, start.height + dy)
-        case .bottomRight:
-            frame.size.width = max(Self.minSize.width, start.width + dx)
-            frame.size.height = max(Self.minSize.height, start.height - dy)
-        case .bottomLeft:
-            frame.size.width = max(Self.minSize.width, start.width - dx)
-            frame.size.height = max(Self.minSize.height, start.height - dy)
-        }
-
-        let screen = panel.screen ?? NSScreen.main
-        let snapped = SnapEngine.snapResize(
-            frame: frame,
-            others: BoxWindowManager.shared.frames(excluding: boxID),
-            screen: screen?.visibleFrame ?? frame,
-            minSize: Self.minSize
-        )
-        frame.size = snapped.size
-        // 固定住不被拖的那两条边
-        if edge == .topLeft || edge == .bottomLeft { frame.origin.x = start.maxX - frame.width }
-        if edge == .topLeft || edge == .topRight { frame.origin.y = start.maxY - frame.height }
-
-        panel.setFrame(frame, display: true)
-        if let screen, !snapped.guides.isEmpty {
-            BoxWindowManager.shared.showGuides(snapped.guides, on: screen)
-        } else {
-            BoxWindowManager.shared.hideGuides()
-        }
+    private func schedulePersistFrame() {
+        guard !isAdjustingFrame, dragStartFrame == nil, resizeStartFrame == nil else { return }
+        persistWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.persistFrame() }
+        persistWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
     }
 
     private func persistFrame() {
         let frame = panel.frame
-        Store.shared.update(id: boxID) { $0.frame = frame }
+        store.update(id: boxID) { $0.frame = frame }
     }
 
-    // MARK: 动作
-
-    /// 把这个框里的图标摆整齐。返回摆好的个数。
-    @discardableResult
-    func tidyIcons() -> Int {
-        let placed = DesktopArranger.tidy(panel.frame)
-        refreshMemberCount()
-        OperationsLog.append("整理框「\(box.name)」：摆好 \(placed) 个图标（只动位置，不碰文件）")
-        return placed
+    private static func framesAlmostEqual(_ a: CGRect, _ b: CGRect) -> Bool {
+        abs(a.origin.x - b.origin.x) < 0.5 && abs(a.origin.y - b.origin.y) < 0.5 &&
+        abs(a.width - b.width) < 0.5 && abs(a.height - b.height) < 0.5
     }
 
-    @discardableResult
-    func rename(to newName: String) -> Bool {
-        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        box.name = trimmed
-        frameView.title = trimmed
-        Store.shared.update(id: boxID) { $0.name = trimmed }
-        return true
+    // MARK: 条目操作（全部只加引用，不搬文件）
+
+    private func handleDrop(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        withAnimation { Commands.add(urls, to: boxID) }
     }
 
-    var currentFrame: CGRect { panel.frame }
-    var memberCount: Int { frameView.memberCount }
+    private func presentAddPanel() {
+        let urls = FileActions.pickFiles(
+            message: "选择要收进「\(box.name)」的内容",
+            startingAt: nil
+        )
+        guard !urls.isEmpty else { return }
+        handleDrop(urls)
+    }
+
+    private func createSiblingBox() {
+        Commands.createBox()
+    }
+
+    /// 隐藏的文件在访达里是选不中的，所以先恢复显示再定位。
+    ///
+    /// 注意这是**真的把它变成可见**，并且同步更新记录 —— 早先只取消隐藏标志、
+    /// 不同步记录，配置里还写着「我隐藏过它」，状态就对不上了。
+    /// 想再藏起来，用条目菜单里的「隐藏原文件」。
+    private func revealKeepingVisibility(_ url: URL) {
+        if HiddenFlag.isHidden(url) {
+            Store.shared.setPathHidden(false, path: url.path)
+            BoxWindowManager.shared.refresh(boxID: boxID)
+        }
+        FileActions.reveal(url)
+    }
+
+    private func confirmClear() {
+        Commands.confirmAndClearBox(boxID)
+    }
+
+    private func confirmTrash(_ url: URL) {
+        guard FileActions.confirm(
+            title: "把「\(url.lastPathComponent)」移到废纸篓？",
+            message: "可以从废纸篓恢复。",
+            confirmTitle: "移到废纸篓"
+        ) else { return }
+        guard FileActions.moveToTrash(url) else { return }
+
+        // 文件已经进废纸篓了 —— 引用必须一起摘掉，否则框里会永久留一个失效条目
+        // （之前就是只 refresh 没摘引用，用户得手工一个个右键移除）。
+        let removed = Store.shared.removeAllReferences(toPath: url.path)
+        BoxWindowManager.shared.refreshAll()
+        if removed > 0 {
+            OperationsLog.append("移到废纸篓后清掉引用 \(removed) 个: \(url.path)")
+        }
+    }
+
+    /// 点选 / ⌘点选 / ⇧范围选。修饰键由 AppKit 侧原样传进来。
+    private func applySelection(to itemID: UUID, flags: NSEvent.ModifierFlags) {
+        let order = itemsModel.items.map(\.id)
+        if flags.contains(.command) {
+            if ui.selectedItemIDs.contains(itemID) {
+                ui.selectedItemIDs.remove(itemID)
+            } else {
+                ui.selectedItemIDs.insert(itemID)
+                ui.selectionAnchor = itemID
+            }
+        } else if flags.contains(.shift),
+                  let anchor = ui.selectionAnchor,
+                  let anchorIndex = order.firstIndex(of: anchor),
+                  let targetIndex = order.firstIndex(of: itemID) {
+            let range = anchorIndex <= targetIndex ? anchorIndex...targetIndex : targetIndex...anchorIndex
+            ui.selectedItemIDs = Set(order[range])
+        } else {
+            ui.selectedItemIDs = [itemID]
+            ui.selectionAnchor = itemID
+        }
+    }
+
+    private func confirmDelete() {
+        Commands.confirmAndDeleteBox(boxID)
+    }
+
+    // MARK: NSWindowDelegate
+
+    func windowDidMove(_ notification: Notification) { schedulePersistFrame() }
+    func windowDidResize(_ notification: Notification) { schedulePersistFrame() }
+    func windowDidEndLiveResize(_ notification: Notification) { persistFrame() }
 }

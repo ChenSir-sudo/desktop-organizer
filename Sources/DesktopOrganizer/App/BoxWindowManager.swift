@@ -16,8 +16,92 @@ final class BoxWindowManager {
     private var hiddenIDs = Set<UUID>()
     private let guideOverlay = GuideOverlayWindow()
     private var cancellables = Set<AnyCancellable>()
+    private var dragOutTimer: Timer?
 
-    private init() {}
+    private init() {
+        // 拖到任何整理框之外松手 = 把它从框里拿出来（原文件恢复显示）
+        DragSession.shared.$payload
+            .compactMap { $0 }
+            .sink { [weak self] payload in self?.armDragOutWatch(payload) }
+            .store(in: &cancellables)
+    }
+
+    /// 拖拽会话会吞掉鼠标事件，`addLocalMonitorForEvents(.leftMouseUp)` 收不到，
+    /// 所以改成轮询按键状态 —— 松开的那一刻就是拖拽结束。
+    private func armDragOutWatch(_ payload: DragPayload) {
+        disarmDragOutWatch()
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            guard NSEvent.pressedMouseButtons == 0 else { return }
+            timer.invalidate()
+            self.dragOutTimer = nil
+            // 让 DropDelegate / onDrop 先把「被接住」的状态写完
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                guard let self else { return }
+                let session = DragSession.shared
+                defer { session.finish() }
+                guard !session.handled else { return }
+
+                guard !self.containsScreenPoint(NSEvent.mouseLocation) else {
+                    // 没落到任何整理框、但指针还在某个框里（比如用户按 Esc 取消了拖拽）。
+                    // 拖拽开始时我们把文件恢复显示了，这里必须把「在框里就隐藏」这个
+                    // 不变量补回来，否则文件会一直保持可见、hiddenPaths 里也没记录了。
+                    Commands.rehideAfterDrop(payload.itemIDs, in: payload.boxID)
+                    self.refreshAll()
+                    OperationsLog.append("拖拽取消（未落框），已恢复原位置隐藏: \(payload.itemIDs.count) 个")
+                    return
+                }
+                // 从框里摘掉即可 —— 文件在拖拽开始时就已恢复显示，
+                // 若被访达移进了别的目录，它现在是可见的，不需要我们再动。
+                let paths = payload.itemIDs.compactMap { id in
+                    Store.shared.box(id: payload.boxID)?.items.first { $0.id == id }?.path
+                }
+                OperationsLog.append("拖出整理框，解除引用 \(payload.itemIDs.count) 个: \(paths.joined(separator: ", "))")
+                Store.shared.removeItems(Set(payload.itemIDs), from: payload.boxID)
+                self.refreshAll()
+                self.removeFinderClippingFiles(matching: payload)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        dragOutTimer = timer
+    }
+
+    private func disarmDragOutWatch() {
+        dragOutTimer?.invalidate()
+        dragOutTimer = nil
+    }
+
+    /// 把条目拖到访达/桌面时，系统可能按「剪贴文件」把拖拽载荷原样写成一个小文件。
+    /// 这里把它清掉。
+    ///
+    /// 三重限制，缺一不可：
+    /// 1. **只有这次拖拽被允许落到应用之外**（用户按住 ⌥）才跑 —— 没有 ⌥ 时
+    ///    系统根本接不到这次拖拽，不可能产生剪贴文件，那就不该有自动删除
+    /// 2. 只看桌面顶层、只处理文件（目录一律跳过）
+    /// 3. 文件**内容必须逐字节等于刚才那份拖拽载荷**、且是 20 秒内新建的
+    private func removeFinderClippingFiles(matching payload: DragPayload) {
+        guard DragSession.shared.outsideAllowed else { return }
+        let needle = Data(payload.encoded.utf8)
+        let desktop = AppPaths.desktopDirectory
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: desktop.path) else { return }
+
+        for name in names {
+            let url = desktop.appendingPathComponent(name)
+            guard !url.fileInfo.isDirectory else { continue }
+            guard let created = try? url.resourceValues(forKeys: [.creationDateKey]).creationDate,
+                  Date().timeIntervalSince(created) < 20 else { continue }
+            guard let data = try? Data(contentsOf: url), data == needle else { continue }
+            try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            OperationsLog.append("清掉访达剪贴文件: \(url.path)")
+            NSLog("[桌面整理] 清掉访达生成的剪贴文件：%@", name)
+        }
+    }
+
+    /// 屏幕坐标是否落在任何一个整理框窗口里。
+    func containsScreenPoint(_ point: CGPoint) -> Bool {
+        controllers.values.contains { $0.panel.isVisible && $0.panel.frame.contains(point) }
+    }
+
     var count: Int { controllers.count }
 
     var allBoxes: [BoxConfig] { Store.shared.boxes }
@@ -78,21 +162,14 @@ final class BoxWindowManager {
     }
 
     /// 只刷新某一个整理框的内容。
-    /// 重新数一遍每个框里有多少个桌面图标（框的内容是实时算出来的，不存在模型里）。
     func refresh(boxID: UUID) {
-        controllers[boxID]?.refreshMemberCount()
+        controllers[boxID]?.itemsModel.refresh(force: true)
     }
 
     func refreshAll() {
         for controller in controllers.values {
-            controller.refreshMemberCount()
+            controller.itemsModel.refresh(force: true)
         }
-    }
-
-    /// 把某个框里的图标摆整齐。
-    @discardableResult
-    func tidy(boxID: UUID) -> Int {
-        controllers[boxID]?.tidyIcons() ?? 0
     }
 
     /// 定位到某个整理框：如果是被隐藏的，先显示；然后临时提到最前，方便找到它。

@@ -21,8 +21,6 @@ struct MainView: View {
     var onDeleteBox: (UUID) -> Void = { _ in }
     var onToggleHidden: (UUID) -> Void = { _ in }
     var onCategorize: () -> Void = {}
-    /// 把这个框里的桌面图标摆整齐（只动图标位置，不碰文件）
-    var onTidyBox: (UUID) -> Void = { _ in }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -137,8 +135,7 @@ struct MainView: View {
                             hovered: ui.hoveredBoxID == box.id,
                             onFocus: { onFocusBox(box.id) },
                             onDelete: { onDeleteBox(box.id) },
-                            onToggleHidden: { onToggleHidden(box.id) },
-                            onTidy: { onTidyBox(box.id) }
+                            onToggleHidden: { onToggleHidden(box.id) }
                         )
                         .onHover { hovering in
                             withAnimation(.easeOut(duration: 0.15)) {
@@ -164,7 +161,6 @@ private struct BoxCard: View {
     let onFocus: () -> Void
     let onDelete: () -> Void
     let onToggleHidden: () -> Void
-    let onTidy: () -> Void
 
     private var brokenCount: Int { box.missingItemCount }
 
@@ -193,7 +189,6 @@ private struct BoxCard: View {
             }
 
             HStack(spacing: 6) {
-                smallButton("整理图标", symbol: "square.grid.3x3", action: onTidy)
                 smallButton(hidden ? "显示" : "隐藏", symbol: hidden ? "eye" : "eye.slash", action: onToggleHidden)
                 smallButton("定位", symbol: "scope", action: onFocus)
                 Spacer(minLength: 0)
