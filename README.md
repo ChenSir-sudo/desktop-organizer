@@ -1,5 +1,7 @@
 # 桌面整理（DesktopOrganizer）
 
+<img src="Resources/AppIcon-1024.png" width="128" align="right" alt="应用图标" />
+
 一个只做一件事的 macOS 小工具：**整理框**。
 
 桌面上摆几个毛玻璃小面板，把文件拖进去就真的被归类到对应文件夹；也可以一键把整个桌面按文件类型自动分类。
@@ -134,3 +136,18 @@ Sources/DesktopOrganizer/
 ```
 
 配置落在 `~/Library/Application Support/DesktopOrganizer/config.json`。
+
+## 图标
+
+`tools/make_icon.py` 生成像素风图标，无外部依赖（用 Pillow 画）：
+
+```bash
+python3 tools/make_icon.py     # 重新生成 Resources/AppIcon.icns 和预览图
+```
+
+图案画在 32×32 的经典像素网格上，用 NEAREST 放大 25 倍保证硬边；底衬是 macOS 标准的
+squircle 轮廓（824×824 内容区），所以放进 Dock 不会显得突兀。背景用 6 段色带做渐变——
+像素画里比抖动更干净，也不会在小尺寸下变成噪点。
+
+<img src="docs/screenshots/icon-preview.png" width="620" alt="图标各尺寸预览" />
+
