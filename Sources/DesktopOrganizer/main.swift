@@ -4,7 +4,8 @@ import AppKit
 let arguments = CommandLine.arguments
 if arguments.contains("--scan") || arguments.contains("--selftest")
     || arguments.contains("--snaptest") || arguments.contains("--hidetest")
-    || arguments.contains("--droptest") || arguments.contains("--safetest") {
+    || arguments.contains("--droptest") || arguments.contains("--safetest")
+    || arguments.contains("--icontest") || arguments.contains("--unhideall") {
     Store.shared.persistenceSuppressed = true
 }
 if arguments.contains("--scan") {
@@ -23,6 +24,26 @@ if arguments.contains("--hidetest") {
     HeadlessTools.hideTest()
     exit(0)
 }
+if arguments.contains("--unhideall") {
+    Store.shared.load()
+    let n = Store.shared.migrateUnhideEverything()
+    Store.shared.save()
+    print("已恢复显示 \(n) 个此前被隐藏的文件")
+    exit(0)
+}
+
+if arguments.contains("--icontest") {
+    let arranged = DesktopIcons.isManuallyArranged
+    print("桌面「排列方式 = 无」: \(arranged ? "是（可以手动摆位）" : "否 —— 手动坐标会被 Finder 覆盖")")
+    let icons = DesktopIcons.readAll()
+    print("读到 \(icons.count) 个桌面图标:")
+    for icon in icons.prefix(12) {
+        let placed = icon.isPlaced ? "(\(Int(icon.position.x)), \(Int(icon.position.y)))" : "未摆放"
+        print("  \(icon.isDirectory ? "D" : "F") \(icon.name)  \(placed)")
+    }
+    exit(0)
+}
+
 if arguments.contains("--snaptest") {
     HeadlessTools.snapTest()
     exit(0)

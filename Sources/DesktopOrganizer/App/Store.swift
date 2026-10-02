@@ -365,6 +365,10 @@ final class Store: ObservableObject {
             OperationsLog.append("配置处于「读取失败」锁定状态，跳过写盘")
             return false
         }
+        // 无头自检模式**绝对不能**写真实配置。
+        // 之前只挡住了 scheduleSave，而 addItems 里新加的同步 save() 绕过了它，
+        // 结果自检用的临时框和状态被写进用户配置，把真实数据冲掉了。
+        guard !persistenceSuppressed else { return false }
 
         // 写盘之前，只要盘上那份**不能安全地替换**，就先留一份带时间戳的副本。
         // 判据：读不出来 / 框更多 / 隐藏记录更多 —— 三种都说明这次写会丢信息。
@@ -502,7 +506,10 @@ final class Store: ObservableObject {
 
         // 记录先落盘。落盘失败就撤销记录、一个文件都不隐藏 —— 宁可这次拖入无效，
         // 也不能留下「文件被隐藏、却没有任何记录」的状态。
-        if !pendingHide.isEmpty, !save() {
+        // 无头自检模式本来就不落盘（save() 直接返回 false），那里不需要这个保护，
+        // 否则自检的内存状态会整个走不通。
+        let persisted = persistenceSuppressed ? true : save()
+        if !pendingHide.isEmpty, !persisted {
             for url in pendingHide { hiddenPaths.remove(url.standardizedFileURL.path) }
             for index in fresh.indices { fresh[index].didHide = false }
             OperationsLog.append("配置落盘失败，已放弃隐藏 \(pendingHide.count) 个文件（不会留下无记录的黑洞）")
@@ -570,6 +577,26 @@ final class Store: ObservableObject {
     ///
     /// 为什么是「所有框」：文件都没了，任何框里的引用都是死的。只摘当前框的话，
     /// 别的框还会留着同样的失效条目，用户得一个个右键清。
+    /// **一次性迁移**：新方案不再隐藏任何文件。
+    /// 用旧配置里那份 hiddenPaths 把之前隐藏过的文件全部恢复显示，
+    /// 然后把记录彻底丢——这也是 hiddenPaths 存在的最后一个理由。
+    @discardableResult
+    func migrateUnhideEverything() -> Int {
+        guard !hiddenPaths.isEmpty else { return 0 }
+        var restored = 0
+        for path in hiddenPaths where HiddenFlag.setHidden(false, for: URL(fileURLWithPath: path)) {
+            restored += 1
+        }
+        OperationsLog.append("迁移：恢复显示 \(restored)/\(hiddenPaths.count) 个此前被隐藏的文件（新方案不再隐藏任何文件）")
+        hiddenPaths.removeAll()
+        for boxIndex in boxes.indices {
+            for itemIndex in boxes[boxIndex].items.indices {
+                boxes[boxIndex].items[itemIndex].didHide = false
+            }
+        }
+        return restored
+    }
+
     @discardableResult
     func removeAllReferences(toPath path: String) -> Int {
         let key = URL(fileURLWithPath: path).standardizedFileURL.path
