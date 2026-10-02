@@ -18,6 +18,11 @@ struct SnapResult {
     var guides: [GuideLine]
 }
 
+struct ResizeSnapResult {
+    var size: CGSize
+    var guides: [GuideLine]
+}
+
 /// 拖动窗口时的吸附计算：屏幕边/中线，以及其它整理框的边/中线。
 enum SnapEngine {
     static let threshold: CGFloat = 8
@@ -71,6 +76,56 @@ enum SnapEngine {
         }
 
         return SnapResult(origin: origin, guides: guides)
+    }
+
+    /// 缩放时的吸附。
+    ///
+    /// 缩放是**固定左上角**的，所以只有两条边在动：右边缘（maxX）和下边缘（minY）。
+    /// 把这两条边吸到屏幕和其它整理框的边/中线上，并给出对应的引导线。
+    static func snapResize(frame: CGRect, others: [CGRect], screen: CGRect,
+                           minSize: CGSize) -> ResizeSnapResult {
+        var xTargets: [CGFloat] = [screen.minX, screen.midX, screen.maxX]
+        var yTargets: [CGFloat] = [screen.minY, screen.midY, screen.maxY]
+        for other in others {
+            xTargets.append(contentsOf: [other.minX, other.midX, other.maxX])
+            yTargets.append(contentsOf: [other.minY, other.midY, other.maxY])
+        }
+        xTargets = xTargets.filter { abs($0 - frame.maxX) < 900 }
+        yTargets = yTargets.filter { abs($0 - frame.minY) < 900 }
+
+        var guides: [GuideLine] = []
+        var maxX = frame.maxX
+        var minY = frame.minY
+
+        if let target = nearest(to: maxX, in: xTargets) {
+            maxX = target
+            guides.append(GuideLine(axis: .vertical, position: target,
+                                    from: screen.minY, to: screen.maxY))
+        }
+        if let target = nearest(to: minY, in: yTargets) {
+            minY = target
+            guides.append(GuideLine(axis: .horizontal, position: target,
+                                    from: screen.minX, to: screen.maxX))
+        }
+
+        return ResizeSnapResult(
+            size: CGSize(width: max(minSize.width, maxX - frame.minX),
+                         height: max(minSize.height, frame.maxY - minY)),
+            guides: guides
+        )
+    }
+
+    /// 距离 value 最近且在阈值内的目标。
+    private static func nearest(to value: CGFloat, in targets: [CGFloat]) -> CGFloat? {
+        var best: (target: CGFloat, distance: CGFloat)?
+        for target in targets {
+            let distance = abs(target - value)
+            guard distance <= threshold else { continue }
+            if best == nil || distance < best!.distance {
+                best = (target, distance)
+            }
+        }
+        return best?.target
     }
 }
 

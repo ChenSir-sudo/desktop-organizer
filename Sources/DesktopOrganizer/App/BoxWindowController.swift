@@ -324,13 +324,31 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         frame.size = CGSize(width: newWidth, height: newHeight)
         frame.origin.x = start.minX
         frame.origin.y = start.maxY - newHeight      // 固定左上角
+
+        // 缩放吸附：右边缘和下边缘对齐到屏幕 / 其它整理框，并显示引导线
+        let screen = panel.screen ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? frame
+        let others = BoxWindowManager.shared.frames(excluding: boxID)
+        let snapped = SnapEngine.snapResize(
+            frame: frame, others: others, screen: visible, minSize: Self.minSize
+        )
+        frame.size = snapped.size
+        frame.origin.y = start.maxY - snapped.size.height   // 依旧固定左上角
+
         panel.setFrame(frame, display: true)
+
+        if let screen, !snapped.guides.isEmpty {
+            BoxWindowManager.shared.showGuides(snapped.guides, on: screen)
+        } else {
+            BoxWindowManager.shared.hideGuides()
+        }
     }
 
     private func endResize() {
         guard resizeStartFrame != nil else { return }
         resizeStartFrame = nil
         resizeStartMouse = nil
+        BoxWindowManager.shared.hideGuides()
         persistFrame()
     }
 

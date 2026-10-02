@@ -68,6 +68,44 @@ enum HeadlessTools {
         )
         check("frame.midX", e.origin.x + 150, 735)
 
+        // 缩放吸附：固定左上角，动的只有右边缘（maxX）和下边缘（minY）
+        print("")
+        print("== 缩放吸附 ==")
+        let r1 = SnapEngine.snapResize(
+            frame: CGRect(x: 100, y: 300, width: 303, height: 100),
+            others: [CGRect(x: 400, y: 0, width: 200, height: 200)],
+            screen: screen,
+            minSize: CGSize(width: 240, height: 160)
+        )
+        print("  引导线: \(describe(r1.guides))")
+        check("右边缘吸到另一框左边缘后的宽度", r1.size.width, 300)
+        check("给出竖引导线", CGFloat(r1.guides.filter { $0.axis == .vertical }.count), 1)
+
+        let r2 = SnapEngine.snapResize(
+            frame: CGRect(x: 100, y: 8, width: 300, height: 300),
+            others: [], screen: screen,
+            minSize: CGSize(width: 240, height: 160)
+        )
+        print("  引导线: \(describe(r2.guides))")
+        check("下边缘吸到屏幕底后的高度", r2.size.height, 308)
+        check("给出横引导线", CGFloat(r2.guides.filter { $0.axis == .horizontal }.count), 1)
+
+        let r3 = SnapEngine.snapResize(
+            frame: CGRect(x: 100, y: 300, width: 700, height: 100),
+            others: [], screen: screen,
+            minSize: CGSize(width: 240, height: 160)
+        )
+        check("离得远时不吸附（宽度不变）", r3.size.width, 700)
+        check("离得远时没有引导线", CGFloat(r3.guides.count), 0)
+
+        let r4 = SnapEngine.snapResize(
+            frame: CGRect(x: 100, y: 300, width: 50, height: 50),
+            others: [], screen: screen,
+            minSize: CGSize(width: 240, height: 160)
+        )
+        check("小于最小尺寸时宽度被夹住", r4.size.width, 240)
+        check("小于最小尺寸时高度被夹住", r4.size.height, 160)
+
         print("")
         print(failures == 0 ? "吸附自检全部通过 ✓" : "吸附自检有 \(failures) 项失败")
     }
