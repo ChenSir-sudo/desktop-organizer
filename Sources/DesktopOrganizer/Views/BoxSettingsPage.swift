@@ -31,6 +31,7 @@ struct BoxSettingsPage: View {
                     floatToggle
                     Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)
                     newBoxButton
+                    brokenButton
                     clearButton
                     deleteButton
                 }
@@ -172,6 +173,22 @@ struct BoxSettingsPage: View {
         .controlSize(.small)
         .disabled(store.itemCount(of: boxID) == 0)
     }
+
+    /// 文件可能是在访达里被删/移走的，那种情况程序不知道。
+    /// 这里给一个一键清掉所有失效条目的入口。
+    private var brokenButton: some View {
+        Button {
+            actions.removeBroken()
+        } label: {
+            Text(brokenCount > 0 ? "清除 \(brokenCount) 个失效条目" : "没有失效条目")
+                .font(.system(size: 11.5))
+                .frame(maxWidth: .infinity)
+        }
+        .controlSize(.small)
+        .disabled(brokenCount == 0)
+    }
+
+    private var brokenCount: Int { store.box(id: boxID)?.missingItemCount ?? 0 }
 
     private var deleteButton: some View {
         Button(role: .destructive) {

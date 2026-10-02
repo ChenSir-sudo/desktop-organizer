@@ -28,6 +28,8 @@ struct BoxActions {
     /// 上报各条目格子的几何与顺序，供 AppKit 层把落点换算成插入下标 / 判断文件夹
     var updateTileFrames: ([UUID: TileGeometry], [UUID]) -> Void = { _, _ in }
     var clearItems: () -> Void = {}
+    /// 清掉所有失效条目（只解除引用，不动文件）
+    var removeBroken: () -> Void = {}
 }
 
 struct BoxView: View {

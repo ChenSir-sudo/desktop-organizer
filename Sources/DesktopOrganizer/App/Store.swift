@@ -565,6 +565,45 @@ final class Store: ObservableObject {
     }
 
     /// 兜底：把本程序隐藏过的文件全部恢复显示。
+    /// 文件已经不在了（例如被移进废纸篓）—— 把它在**所有**整理框里的引用一并摘掉，
+    /// 并清掉隐藏记录。
+    ///
+    /// 为什么是「所有框」：文件都没了，任何框里的引用都是死的。只摘当前框的话，
+    /// 别的框还会留着同样的失效条目，用户得一个个右键清。
+    @discardableResult
+    func removeAllReferences(toPath path: String) -> Int {
+        let key = URL(fileURLWithPath: path).standardizedFileURL.path
+        var removed = 0
+        for boxIndex in boxes.indices {
+            let before = boxes[boxIndex].items.count
+            boxes[boxIndex].items.removeAll {
+                URL(fileURLWithPath: $0.path).standardizedFileURL.path == key
+            }
+            removed += before - boxes[boxIndex].items.count
+        }
+        hiddenPaths.remove(key)
+        if removed > 0 { scheduleSave() }
+        return removed
+    }
+
+    /// 清掉所有「文件已不在原位置」的失效条目，返回清掉的条数。
+    @discardableResult
+    func removeBrokenReferences() -> Int {
+        var removed = 0
+        for boxIndex in boxes.indices {
+            let broken = boxes[boxIndex].items.filter { !FileManager.default.fileExists(atPath: $0.path) }
+            guard !broken.isEmpty else { continue }
+            let brokenIDs = Set(broken.map(\.id))
+            boxes[boxIndex].items.removeAll { brokenIDs.contains($0.id) }
+            for item in broken {
+                hiddenPaths.remove(URL(fileURLWithPath: item.path).standardizedFileURL.path)
+            }
+            removed += broken.count
+        }
+        if removed > 0 { scheduleSave() }
+        return removed
+    }
+
     @discardableResult
     func restoreAllHidden() -> Int {
         var count = 0

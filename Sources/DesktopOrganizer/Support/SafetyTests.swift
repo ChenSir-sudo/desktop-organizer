@@ -229,6 +229,54 @@ enum SafetyTests {
             check("删框后文件仍在", fm.fileExists(atPath: file.path))
         }
 
+        // MARK: 保证十：移到废纸篓后不能留失效引用
+
+        print("")
+        print("== 保证：移到废纸篓后清干净引用 ==")
+        do {
+            let dir = makeDir("m10")
+            let file = makeFile(dir, "要删的.txt", "内容")
+            let boxA = Store.shared.addBox(name: "__m10a__")
+            let boxB = Store.shared.addBox(name: "__m10b__")
+            Store.shared.addItems([file], to: boxA.id)
+            Store.shared.addItems([file], to: boxB.id)
+            check("两个框都引用了它",
+                  Store.shared.box(id: boxA.id)?.items.count == 1
+                  && Store.shared.box(id: boxB.id)?.items.count == 1)
+
+            let trashed = FileActions.moveToTrash(file)
+            check("已移进废纸篓", trashed && !fm.fileExists(atPath: file.path))
+
+            let removed = Store.shared.removeAllReferences(toPath: file.path)
+            check("两个框里的引用都清掉了（不是只清一个）", removed == 2)
+            check("框 A 不再留着失效条目", Store.shared.box(id: boxA.id)?.items.isEmpty == true)
+            check("框 B 不再留着失效条目", Store.shared.box(id: boxB.id)?.items.isEmpty == true)
+            check("隐藏记录也清了",
+                  !Store.shared.hiddenPaths.contains(file.standardizedFileURL.path))
+
+            Store.shared.removeBox(id: boxA.id)
+            Store.shared.removeBox(id: boxB.id)
+        }
+
+        // MARK: 保证十一：一键清除失效条目
+
+        print("")
+        print("== 保证：一键清失效条目 ==")
+        do {
+            let dir = makeDir("m11")
+            let gone = makeFile(dir, "待会删掉.txt", "x")
+            let kept = makeFile(dir, "保留.txt", "y")
+            let box = Store.shared.addBox(name: "__m11__")
+            Store.shared.addItems([gone, kept], to: box.id)
+            try? fm.removeItem(at: gone)          // 模拟在访达里被删掉
+
+            let cleared = Store.shared.removeBrokenReferences()
+            check("清掉了 1 个失效条目", cleared == 1)
+            check("有效条目保留", Store.shared.box(id: box.id)?.items.count == 1)
+            check("保留的那个文件没被动过", fm.fileExists(atPath: kept.path))
+            Store.shared.removeBox(id: box.id)
+        }
+
         print("")
         print(failures == 0
               ? "安全测试：全部通过 ✓（\(checks) 项）"

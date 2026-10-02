@@ -181,7 +181,8 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
                     self.dropContainer.note("几何上报 \(tiles.count) 个格子（其中文件夹 \(folders) 个）")
                 }
             },
-            clearItems: { [weak self] in self?.confirmClear() }
+            clearItems: { [weak self] in self?.confirmClear() },
+            removeBroken: { Commands.removeBrokenReferences() }
         )
     }
 
@@ -419,8 +420,14 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
             message: "可以从废纸篓恢复。",
             confirmTitle: "移到废纸篓"
         ) else { return }
-        if FileActions.moveToTrash(url) {
-            BoxWindowManager.shared.refresh(boxID: boxID)
+        guard FileActions.moveToTrash(url) else { return }
+
+        // 文件已经进废纸篓了 —— 引用必须一起摘掉，否则框里会永久留一个失效条目
+        // （之前就是只 refresh 没摘引用，用户得手工一个个右键移除）。
+        let removed = Store.shared.removeAllReferences(toPath: url.path)
+        BoxWindowManager.shared.refreshAll()
+        if removed > 0 {
+            OperationsLog.append("移到废纸篓后清掉引用 \(removed) 个: \(url.path)")
         }
     }
 

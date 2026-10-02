@@ -150,6 +150,15 @@ enum Commands {
         }
     }
 
+    /// 清掉所有失效条目（文件已经不在原位置的）。
+    static func removeBrokenReferences() {
+        let count = Store.shared.removeBrokenReferences()
+        BoxWindowManager.shared.refreshAll()
+        if count > 0 {
+            OperationsLog.append("清除失效条目 \(count) 个（只解除引用，不动文件）")
+        }
+    }
+
     static func toggleHidden(_ hidden: Bool, itemID: UUID, in boxID: UUID) {
         Store.shared.setItemHidden(hidden, itemID: itemID, in: boxID)
         BoxWindowManager.shared.refresh(boxID: boxID)
