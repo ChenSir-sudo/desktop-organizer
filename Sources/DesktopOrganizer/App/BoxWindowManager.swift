@@ -44,7 +44,10 @@ final class BoxWindowManager {
                 guard !self.containsScreenPoint(NSEvent.mouseLocation) else { return }
                 // 从框里摘掉即可 —— 文件在拖拽开始时就已恢复显示，
                 // 若被访达移进了别的目录，它现在是可见的，不需要我们再动。
-                OperationsLog.append("拖出整理框（只解除引用，不动文件）: \(payload.itemIDs.count) 个条目")
+                let paths = payload.itemIDs.compactMap { id in
+                    Store.shared.box(id: payload.boxID)?.items.first { $0.id == id }?.path
+                }
+                OperationsLog.append("拖出整理框，解除引用 \(payload.itemIDs.count) 个: \(paths.joined(separator: ", "))")
                 Store.shared.removeItems(Set(payload.itemIDs), from: payload.boxID)
                 self.refreshAll()
                 self.removeFinderClippingFiles(matching: payload)

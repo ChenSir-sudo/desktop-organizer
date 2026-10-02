@@ -129,14 +129,29 @@ final class BoxContentView: NSView, NSDraggingSource {
         }
         guard !draggingItems.isEmpty else { return }
 
+        let paths = ids.compactMap { tiles[$0]?.url.path }
         log("开始拖动 \(ids.count) 个条目（一个文件一个粘贴板项）")
+        OperationsLog.append("开始拖拽 \(ids.count) 个条目: \(paths.joined(separator: ", "))")
         beginDraggingSession(with: draggingItems, event: event, source: self)
     }
 
-    /// 应用内：移动（重排 / 跨框转移）。应用外：也允许移动，访达才能把文件搬进目标目录。
+    /// 拖拽允许的落点。
+    ///
+    /// 应用内：move（框内重排 / 跨框转移，只改引用，不动文件）。
+    ///
+    /// 应用外：**默认拒绝**。这一点非常重要 —— 载荷里带了文件的 `public.file-url`，
+    /// 一旦放行，拖拽只要落在整理框之外（手滑没对准目标框、落在访达窗口里、
+    /// 落在别的宗卷的窗口里），系统就会把这次拖拽交给访达，**由访达真的搬走文件**。
+    /// 而跨宗卷搬移是「复制 + 删除」，源文件不进废纸篓、无法恢复。
+    /// 宁可什么都不做，也不能让用户的文件在我们不知情的情况下被搬走。
+    ///
+    /// 确实要交给访达搬进某个目录时：按住 ⌥ 再拖（明确意图）。
     func draggingSession(_ session: NSDraggingSession,
                          sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-        context == .withinApplication ? .move : [.move, .copy]
+        guard context == .withinApplication else {
+            return NSEvent.modifierFlags.contains(.option) ? [.move, .copy] : []
+        }
+        return .move
     }
 
     func ignoreModifierKeys(for session: NSDraggingSession) -> Bool { true }
