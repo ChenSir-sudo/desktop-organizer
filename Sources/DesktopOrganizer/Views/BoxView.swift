@@ -165,16 +165,14 @@ struct BoxView: View {
 
             Spacer(minLength: 4)
 
-            Text("\(model.items.count)")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Capsule().fill(Color.primary.opacity(0.08)))
-                .opacity(ui.actionAreaHovered ? 0 : 1)
-
-            actionArea
+            // 数量气泡和右上角按钮是同一组：共用一个悬停区域，
+            // 否则鼠标从左边的气泡滑过去时悬停会断掉，两边一起闪烁。
+            HStack(spacing: 6) {
+                countBubble
+                actionArea
+            }
+            .contentShape(Rectangle())
+            .onHover { hovering in ui.actionAreaHovered = hovering }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -225,7 +223,20 @@ struct BoxView: View {
         .opacity(ui.actionAreaHovered ? 1 : 0)
         .scaleEffect(ui.actionAreaHovered ? 1 : 0.92, anchor: .trailing)
         .animation(.easeOut(duration: 0.18), value: ui.actionAreaHovered)
-        .onHover { hovering in ui.actionAreaHovered = hovering }
+    }
+
+    /// 文件数量气泡。跟右上角按钮一起显隐，锚点在右侧，像是从按钮那边长出来的。
+    private var countBubble: some View {
+        Text("\(model.items.count)")
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(Color.primary.opacity(0.08)))
+            .opacity(ui.actionAreaHovered ? 1 : 0)
+            .scaleEffect(ui.actionAreaHovered ? 1 : 0.92, anchor: .trailing)
+            .animation(.easeOut(duration: 0.18), value: ui.actionAreaHovered)
     }
 
     private func iconButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
