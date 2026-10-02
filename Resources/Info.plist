@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>3.0</string>
+	<string>3.1</string>
 	<key>CFBundleVersion</key>
-	<string>13</string>
+	<string>14</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
@@ -30,20 +30,5 @@
 	<false/>
 	<key>NSSupportsSuddenTermination</key>
 	<false/>
-	<key>UTExportedTypeDeclarations</key>
-	<array>
-		<dict>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>public.data</string>
-			</array>
-			<key>UTTypeDescription</key>
-			<string>整理框条目引用</string>
-			<key>UTTypeIdentifier</key>
-			<string>com.chenziyang.desktoporganizer.item</string>
-			<key>UTTypeTagSpecification</key>
-			<dict/>
-		</dict>
-	</array>
 </dict>
 </plist>

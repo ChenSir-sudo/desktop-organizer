@@ -44,6 +44,7 @@ final class BoxWindowManager {
                 guard !self.containsScreenPoint(NSEvent.mouseLocation) else { return }
                 Store.shared.removeItems([payload.itemID], from: payload.boxID)
                 self.refreshAll()
+                self.removeFinderClippingFiles(matching: payload)
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -53,6 +54,25 @@ final class BoxWindowManager {
     private func disarmDragOutWatch() {
         dragOutTimer?.invalidate()
         dragOutTimer = nil
+    }
+
+    /// 把条目拖到访达/桌面时，系统可能按「剪贴文件」把拖拽载荷原样写成一个小文件。
+    /// 这里把它清掉：判据是**文件内容完全等于刚才那份拖拽载荷**，且是刚刚创建的 ——
+    /// 内容精确匹配，不会误删任何正常文件。
+    private func removeFinderClippingFiles(matching payload: DragPayload) {
+        let needle = Data(payload.encoded.utf8)
+        let desktop = AppPaths.desktopDirectory
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: desktop.path) else { return }
+
+        for name in names {
+            let url = desktop.appendingPathComponent(name)
+            guard !url.fileInfo.isDirectory else { continue }
+            guard let created = try? url.resourceValues(forKeys: [.creationDateKey]).creationDate,
+                  Date().timeIntervalSince(created) < 20 else { continue }
+            guard let data = try? Data(contentsOf: url), data == needle else { continue }
+            try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            NSLog("[桌面整理] 清掉访达生成的剪贴文件：%@", name)
+        }
     }
 
     /// 屏幕坐标是否落在任何一个整理框窗口里。

@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// 整理框内部拖拽时携带的数据。
 ///
@@ -11,10 +10,6 @@ struct DragPayload: Equatable {
     var itemID: UUID
 
     static let typeIdentifier = "com.chenziyang.desktoporganizer.item"
-    /// 刻意**不**在 Info.plist 里声明这个类型。
-    /// 声明成导出类型（conforms to public.data）后，往桌面/访达拖时系统会把它
-    /// 当文件内容写出来，生成一个叫「整理框条目引用 XX」的垃圾文件。
-    static var utType: UTType { UTType(typeIdentifier) ?? .data }
 
     init(boxID: UUID, itemID: UUID) {
         self.boxID = boxID
@@ -35,9 +30,12 @@ struct DragPayload: Equatable {
     static func provider(for payload: DragPayload) -> NSItemProvider {
         let provider = NSItemProvider()
         let data = Data(payload.encoded.utf8)
+        // visibility 必须是 .ownProcess：改成 .all 的话访达能看到这份数据，
+        // 就会按「剪贴文件」把载荷原样写到桌面上（就是你看到的那些
+        // 「整理框条目引用 XX」）。整理框内部拖拽不需要跨进程可见。
         provider.registerDataRepresentation(
             forTypeIdentifier: typeIdentifier,
-            visibility: .all
+            visibility: .ownProcess
         ) { completion in
             completion(data, nil)
             return nil
