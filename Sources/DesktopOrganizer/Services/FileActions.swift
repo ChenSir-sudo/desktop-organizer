@@ -113,31 +113,22 @@ enum FileActions {
             let destination = uniqueDestination(for: src, in: destinationRoot)
             OperationsLog.append("移入文件夹: \(src.path) -> \(destination.path)")
             do {
+                // 这里**不要**任何手写的「复制 + 删除」兜底。
+                //
+                // 之前有过一段：catch 里 copyItem 之后再 removeItem。它建立在
+                // 一个我从没验证过的假设上——「moveItem 不能跨宗卷」。实测（建一个
+                // 另一宗卷的磁盘映像再移过去）：**moveItem 自己就能跨宗卷**，
+                // 内容完整、源消失。所以那段兜底纯属多余，而它却是全程序唯一
+                // 绕过废纸篓的永久删除路径 —— 用户丢过一个重要目录。
+                //
+                // 现在的原则：失败就失败，源文件原封不动。绝不为了「让功能成功」
+                // 去删用户的东西。
                 try fm.moveItem(at: src, to: destination)
                 outcome.moved.append(destination)
-                OperationsLog.append("  成功（moveItem）")
+                OperationsLog.append("  成功")
             } catch {
-                // 跨宗卷时退化成复制 + 删除。
-                //
-                // 这里是全程序唯一可能**永久删除**用户文件的地方，所以格外小心：
-                // 1) 先确认复制出来的东西确实落在目标位置
-                // 2) 源用 trashItem 而不是 removeItem —— 放废纸篓还能捞回来，
-                //    removeItem 是永久删除、绕过废纸篓
-                OperationsLog.append("  moveItem 失败（\(error.localizedDescription)），退化复制 + 删除")
-                do {
-                    try fm.copyItem(at: src, to: destination)
-                    guard fm.fileExists(atPath: destination.path) else {
-                        outcome.failures.append((src, "复制后目标不存在，已保留源文件"))
-                        OperationsLog.append("  中止：复制后目标不存在，源文件已保留")
-                        continue
-                    }
-                    try fm.trashItem(at: src, resultingItemURL: nil)
-                    outcome.moved.append(destination)
-                    OperationsLog.append("  成功（复制 + 源放入废纸篓，可从废纸篓恢复）")
-                } catch {
-                    outcome.failures.append((src, error.localizedDescription))
-                    OperationsLog.append("  失败：\(error.localizedDescription)")
-                }
+                outcome.failures.append((src, error.localizedDescription))
+                OperationsLog.append("  失败（源文件保持不动）: \(error.localizedDescription)")
             }
         }
         return outcome
