@@ -18,6 +18,7 @@ enum FileActions {
     /// 移到废纸篓 —— 这是整个程序里唯一会动文件的地方，且必须由用户逐个触发并二次确认。
     @discardableResult
     static func moveToTrash(_ url: URL) -> Bool {
+        OperationsLog.append("移到废纸篓: \(url.path)")
         do {
             try FileManager.default.trashItem(at: url, resultingItemURL: nil)
             return true
@@ -110,17 +111,32 @@ enum FileActions {
             }
 
             let destination = uniqueDestination(for: src, in: destinationRoot)
+            OperationsLog.append("移入文件夹: \(src.path) -> \(destination.path)")
             do {
                 try fm.moveItem(at: src, to: destination)
                 outcome.moved.append(destination)
+                OperationsLog.append("  成功（moveItem）")
             } catch {
-                // 跨宗卷时退化成复制 + 删除
+                // 跨宗卷时退化成复制 + 删除。
+                //
+                // 这里是全程序唯一可能**永久删除**用户文件的地方，所以格外小心：
+                // 1) 先确认复制出来的东西确实落在目标位置
+                // 2) 源用 trashItem 而不是 removeItem —— 放废纸篓还能捞回来，
+                //    removeItem 是永久删除、绕过废纸篓
+                OperationsLog.append("  moveItem 失败（\(error.localizedDescription)），退化复制 + 删除")
                 do {
                     try fm.copyItem(at: src, to: destination)
-                    try fm.removeItem(at: src)
+                    guard fm.fileExists(atPath: destination.path) else {
+                        outcome.failures.append((src, "复制后目标不存在，已保留源文件"))
+                        OperationsLog.append("  中止：复制后目标不存在，源文件已保留")
+                        continue
+                    }
+                    try fm.trashItem(at: src, resultingItemURL: nil)
                     outcome.moved.append(destination)
+                    OperationsLog.append("  成功（复制 + 源放入废纸篓，可从废纸篓恢复）")
                 } catch {
                     outcome.failures.append((src, error.localizedDescription))
+                    OperationsLog.append("  失败：\(error.localizedDescription)")
                 }
             }
         }

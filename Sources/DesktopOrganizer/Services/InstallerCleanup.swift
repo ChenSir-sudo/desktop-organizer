@@ -97,6 +97,7 @@ enum InstallerCleanup {
                    let appCreated, created > appCreated {
                     continue
                 }
+                OperationsLog.append("安装包清理，移到废纸篓: \(url.path)")
                 if (try? fm.trashItem(at: url, resultingItemURL: nil)) != nil {
                     removed += 1
                 }
