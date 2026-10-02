@@ -69,12 +69,21 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         // 内容视图是负责接收外部拖拽的 AppKit 视图；SwiftUI 宿主视图铺在它上面。
         // SwiftUI 那边不再注册 file-url（只保留内部拖拽用的自定义类型），
         // 所以外部文件一定会落到这层。
-        dropContainer.autoresizingMask = [.width, .height]
-        dropContainer.frame = CGRect(origin: .zero, size: panel.frame.size)
+        // 层级：容器 > BoxContentView（在上，负责拖拽源/落点、条目点选） > SwiftUI 宿主视图
+        // BoxContentView 的 hitTest 只在「左键按在条目格子上」时接管，
+        // 其余事件放行给下面的宿主视图，所以悬浮、右键菜单等交互不受影响。
+        let container = NSView(frame: CGRect(origin: .zero, size: panel.frame.size))
+        container.autoresizingMask = [.width, .height]
+
         hostView.autoresizingMask = [.width, .height]
-        hostView.frame = dropContainer.bounds
-        dropContainer.addSubview(hostView)
-        panel.contentView = dropContainer
+        hostView.frame = container.bounds
+        container.addSubview(hostView)
+
+        dropContainer.autoresizingMask = [.width, .height]
+        dropContainer.frame = container.bounds
+        container.addSubview(dropContainer)
+
+        panel.contentView = container
 
         // 外部文件：落在文件夹图标上就移进那个文件夹，否则加入整理框
         dropContainer.onFileDrop = { [weak self] urls, _, folder in
@@ -113,6 +122,20 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         }
         dropContainer.onFolderTargetChanged = { id in
             DragSession.shared.folderDropTargetID = id
+        }
+        dropContainer.boxID = boxID
+        dropContainer.selectionProvider = { [weak self] in self?.ui.selectedItemIDs ?? [] }
+        dropContainer.onSelectionChange = { [weak self] id, flags in
+            self?.applySelection(to: id, flags: flags)
+        }
+        dropContainer.onOpenItem = { id in
+            guard let item = Store.shared.box(id: self.boxID)?.items.first(where: { $0.id == id }),
+                  FileManager.default.fileExists(atPath: item.path) else { return }
+            FileActions.open(item.url)
+        }
+        dropContainer.onDragWillBegin = { ids in
+            // 先恢复显示：拖到框外是访达在搬文件，隐藏标志会跟着文件走
+            Commands.unhideForDragging(ids, in: self.boxID)
         }
     }
 
@@ -376,6 +399,28 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         ) else { return }
         if FileActions.moveToTrash(url) {
             BoxWindowManager.shared.refresh(boxID: boxID)
+        }
+    }
+
+    /// 点选 / ⌘点选 / ⇧范围选。修饰键由 AppKit 侧原样传进来。
+    private func applySelection(to itemID: UUID, flags: NSEvent.ModifierFlags) {
+        let order = itemsModel.items.map(\.id)
+        if flags.contains(.command) {
+            if ui.selectedItemIDs.contains(itemID) {
+                ui.selectedItemIDs.remove(itemID)
+            } else {
+                ui.selectedItemIDs.insert(itemID)
+                ui.selectionAnchor = itemID
+            }
+        } else if flags.contains(.shift),
+                  let anchor = ui.selectionAnchor,
+                  let anchorIndex = order.firstIndex(of: anchor),
+                  let targetIndex = order.firstIndex(of: itemID) {
+            let range = anchorIndex <= targetIndex ? anchorIndex...targetIndex : targetIndex...anchorIndex
+            ui.selectedItemIDs = Set(order[range])
+        } else {
+            ui.selectedItemIDs = [itemID]
+            ui.selectionAnchor = itemID
         }
     }
 

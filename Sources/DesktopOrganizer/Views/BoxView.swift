@@ -237,21 +237,11 @@ struct BoxView: View {
                             isSelected: ui.selectedItemIDs.contains(item.id),
                             isBeingDragged: session.payload?.itemIDs.contains(item.id) ?? false,
                             isFolderDropTarget: session.folderDropTargetID == item.id,
-                            actions: actions,
-                            onSelect: { handleSelection(of: item) }
+                            actions: actions
                         )
-                        .onDrag {
-                            let ids = dragSelection(for: item)
-                            let payload = DragPayload(boxID: boxID, itemIDs: ids)
-                            session.begin(payload)
-                            // 先恢复显示：万一最后是访达在搬文件，隐藏标志会跟着文件走
-                            Commands.unhideForDragging(ids, in: boxID)
-                            // 带上对应的文件 URL：拖到框外时访达才能把文件移进目标目录
-                            let urls = model.items.filter { ids.contains($0.id) }.map(\.url)
-                            return DragPayload.provider(for: payload, fileURLs: urls)
-                        } preview: {
-                            dragPreview(for: item)
-                        }
+                        // 拖动源和点选都在 AppKit 侧（BoxContentView）处理 ——
+                        // SwiftUI 的 .onDrag 只能带一个文件 URL，多选拖到访达的目录里
+                        // 只有第一个文件会被搬走。
                         .background(
                             GeometryReader { geo in
                                 Color.clear.preference(
@@ -283,52 +273,6 @@ struct BoxView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-    }
-
-    /// 点选 / ⌘点选 / ⇧范围选。修饰键直接读当前状态，SwiftUI 的 tap 手势拿不到。
-    private func handleSelection(of item: ResolvedItem) {
-        let flags = NSEvent.modifierFlags
-        if flags.contains(.command) {
-            if ui.selectedItemIDs.contains(item.id) {
-                ui.selectedItemIDs.remove(item.id)
-            } else {
-                ui.selectedItemIDs.insert(item.id)
-                ui.selectionAnchor = item.id
-            }
-        } else if flags.contains(.shift),
-                  let anchor = ui.selectionAnchor,
-                  let anchorIndex = model.items.firstIndex(where: { $0.id == anchor }),
-                  let targetIndex = model.items.firstIndex(where: { $0.id == item.id }) {
-            let range = anchorIndex <= targetIndex ? anchorIndex...targetIndex : targetIndex...anchorIndex
-            ui.selectedItemIDs = Set(model.items[range].map(\.id))
-        } else {
-            ui.selectedItemIDs = [item.id]
-            ui.selectionAnchor = item.id
-        }
-    }
-
-    /// 拖某个条目时要带上哪些：如果它已经被选中，就带上整批；否则只有它自己。
-    private func dragSelection(for item: ResolvedItem) -> [UUID] {
-        if ui.selectedItemIDs.contains(item.id), ui.selectedItemIDs.count > 1 {
-            return model.items.map(\.id).filter { ui.selectedItemIDs.contains($0) }
-        }
-        ui.selectedItemIDs = [item.id]
-        ui.selectionAnchor = item.id
-        return [item.id]
-    }
-
-    private func dragPreview(for item: ResolvedItem) -> some View {
-        HStack(spacing: 6) {
-            Image(nsImage: item.icon).resizable().frame(width: 20, height: 20)
-            if session.payload.map({ $0.itemIDs.count > 1 }) ?? false {
-                Text("\(session.payload?.itemIDs.count ?? 1) 项").font(.system(size: 11, weight: .medium))
-            } else {
-                Text(item.name).font(.system(size: 11)).lineLimit(1)
-            }
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(Capsule().fill(Color(nsColor: .controlBackgroundColor)))
     }
 
     private var emptyState: some View {
@@ -399,7 +343,6 @@ struct ItemTile: View {
     let isBeingDragged: Bool
     let isFolderDropTarget: Bool
     let actions: BoxActions
-    let onSelect: () -> Void
 
     @State private var hovering = false
 
@@ -444,10 +387,7 @@ struct ItemTile: View {
         .opacity(isBeingDragged ? 0.35 : 1)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .onTapGesture(count: 2) {
-            if item.exists { actions.openItem(item.url) }
-        }
-        .onTapGesture(count: 1) { onSelect() }
+
         .contextMenu { menu }
         .help(item.isBroken ? "\(item.name)\n（文件已不在原位置）" : item.url.path)
     }
