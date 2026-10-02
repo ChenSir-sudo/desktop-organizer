@@ -128,6 +128,9 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         dropContainer.onSelectionChange = { [weak self] id, flags in
             self?.applySelection(to: id, flags: flags)
         }
+        dropContainer.onClearSelection = { [weak self] in
+            self?.ui.selectedItemIDs.removeAll()
+        }
         dropContainer.onOpenItem = { id in
             guard let item = Store.shared.box(id: self.boxID)?.items.first(where: { $0.id == id }),
                   FileManager.default.fileExists(atPath: item.path) else { return }

@@ -416,6 +416,43 @@ enum HeadlessTools {
               DragPayload.pasteboardType.rawValue == DragPayload.typeIdentifier)
 
 
+        // 复现用户的真实场景：父目录在一个框、子目录在另一个框，
+        // 然后把子目录从一个框拖到另一个框（Commands.transfer 走的就是这条）。
+        // 断言：两个目录和里面的文件都必须原封不动。
+        print("")
+        print("== 跨框转移不得动到文件 ==")
+        let ws = staging.appendingPathComponent("workspace")
+        let mn = ws.appendingPathComponent("main_note")
+        try? fm.createDirectory(at: mn, withIntermediateDirectories: true)
+        let inner = mn.appendingPathComponent("笔记.md")
+        try? "# 内容".write(to: inner, atomically: true, encoding: .utf8)
+
+        let boxP = Store.shared.addBox(name: "__parent__")
+        let boxC = Store.shared.addBox(name: "__child__")
+        Store.shared.addItems([ws], to: boxP.id)
+        Store.shared.addItems([mn], to: boxC.id)
+        check("两个目录都在", fm.fileExists(atPath: ws.path) && fm.fileExists(atPath: mn.path))
+
+        if let childID = Store.shared.box(id: boxC.id)?.items.first?.id {
+            // 等价于从子目录所在的框拖到父目录所在的框
+            let moved = Store.shared.transferItems([childID], from: boxC.id, to: boxP.id, at: 0)
+            check("转移成功", moved)
+        }
+        check("转移后父目录仍在", fm.fileExists(atPath: ws.path))
+        check("转移后子目录仍在", fm.fileExists(atPath: mn.path))
+        check("转移后里面的文件仍在", fm.fileExists(atPath: inner.path))
+        check("转移后子目录还在父目录里面", mn.path.hasPrefix(ws.path + "/"))
+
+        // 反向：再拖回去
+        if let itemID = Store.shared.box(id: boxP.id)?.items.first(where: { $0.path == mn.path })?.id {
+            _ = Store.shared.transferItems([itemID], from: boxP.id, to: boxC.id, at: 0)
+        }
+        check("反向转移后文件仍在", fm.fileExists(atPath: inner.path))
+
+        Store.shared.removeBox(id: boxP.id)
+        Store.shared.removeBox(id: boxC.id)
+        try? fm.removeItem(at: ws)
+
         print("")
         print(failures == 0 ? "自检结束：全部通过 ✓" : "自检结束：有 \(failures) 项失败 ✗")
     }

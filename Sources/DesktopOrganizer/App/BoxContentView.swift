@@ -27,6 +27,8 @@ final class BoxContentView: NSView, NSDraggingSource {
     var onSelectionChange: ((UUID, NSEvent.ModifierFlags) -> Void)?
     /// 双击打开某个条目。
     var onOpenItem: ((UUID) -> Void)?
+    /// 点空白处：清空选择。
+    var onClearSelection: (() -> Void)?
     /// 即将开始拖动这些条目 —— 控制器趁机先把文件恢复显示。
     var onDragWillBegin: (([UUID]) -> Void)?
     /// 当前选中的条目（由控制器提供）。
@@ -58,14 +60,19 @@ final class BoxContentView: NSView, NSDraggingSource {
 
     // MARK: - 命中测试
 
-    /// 只在**左键按在条目格子上**时接管事件；其余（悬浮、右键菜单、滚轮）
-    /// 一律放行给下面的 SwiftUI 宿主视图，保持原有交互。
+    /// 左键事件**整窗接管**，其余（悬浮、右键菜单、滚轮）放行给下面的 SwiftUI。
+    ///
+    /// 这里必须是整窗、不能只判格子。早先写成「只有压在条目格子上才接管」，
+    /// 后果非常严重：拖拽落到整理框的**空白处**（格子之间）时这一层不接管，
+    /// 这次拖拽就会漏到下面的访达/桌面 —— 而载荷里带着 `public.file-url`，
+    /// 访达会**真的把用户的文件搬走**。用户报过「拖到空白处进不去」，
+    /// 而它同时也是丢文件的通道。空白处的点击改由 mouseDown 里清空选择处理。
     override func hitTest(_ point: NSPoint) -> NSView? {
         if didStartDrag { return self }
         guard let event = NSApp.currentEvent else { return nil }
         switch event.type {
         case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
-            return tile(at: point) != nil ? self : nil
+            return self
         default:
             return nil
         }
@@ -75,7 +82,11 @@ final class BoxContentView: NSView, NSDraggingSource {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        guard let hit = tile(at: point) else { return }
+        guard let hit = tile(at: point) else {
+            // 点在空白处：清空选择（原来由 SwiftUI 那边负责，现在整窗接管了）
+            onClearSelection?()
+            return
+        }
 
         if event.clickCount == 2 {
             onOpenItem?(hit.id)
