@@ -63,9 +63,15 @@ final class BoxWindowManager {
     }
 
     /// 把条目拖到访达/桌面时，系统可能按「剪贴文件」把拖拽载荷原样写成一个小文件。
-    /// 这里把它清掉：判据是**文件内容完全等于刚才那份拖拽载荷**，且是刚刚创建的 ——
-    /// 内容精确匹配，不会误删任何正常文件。
+    /// 这里把它清掉。
+    ///
+    /// 三重限制，缺一不可：
+    /// 1. **只有这次拖拽被允许落到应用之外**（用户按住 ⌥）才跑 —— 没有 ⌥ 时
+    ///    系统根本接不到这次拖拽，不可能产生剪贴文件，那就不该有自动删除
+    /// 2. 只看桌面顶层、只处理文件（目录一律跳过）
+    /// 3. 文件**内容必须逐字节等于刚才那份拖拽载荷**、且是 20 秒内新建的
     private func removeFinderClippingFiles(matching payload: DragPayload) {
+        guard DragSession.shared.outsideAllowed else { return }
         let needle = Data(payload.encoded.utf8)
         let desktop = AppPaths.desktopDirectory
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: desktop.path) else { return }

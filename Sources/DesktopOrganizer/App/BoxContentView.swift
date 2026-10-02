@@ -160,7 +160,9 @@ final class BoxContentView: NSView, NSDraggingSource {
     func draggingSession(_ session: NSDraggingSession,
                          sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
         guard context == .withinApplication else {
-            return NSEvent.modifierFlags.contains(.option) ? [.move, .copy] : []
+            let allow = NSEvent.modifierFlags.contains(.option)
+            if allow { DragSession.shared.outsideAllowed = true }
+            return allow ? [.move, .copy] : []
         }
         return .move
     }

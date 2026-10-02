@@ -113,15 +113,22 @@ final class DragSession: ObservableObject {
     /// 正悬停在哪个文件夹图标上（内部条目和外部文件都用它做高亮提示）
     @Published var folderDropTargetID: UUID?
 
+    /// 这次拖拽**是否被允许落到应用之外**（也就是用户按住了 ⌥）。
+    /// 只有这种情况系统才可能接手、并在桌面留下「剪贴文件」。
+    /// 剪贴文件清理只在这种情况下才允许跑 —— 自动删除的触发面越小越好。
+    @Published var outsideAllowed = false
+
     func begin(_ payload: DragPayload) {
         self.payload = payload
         handled = false
         folderDropTargetID = nil
+        outsideAllowed = false
     }
 
     func finish() {
         payload = nil
         handled = false
         folderDropTargetID = nil
+        outsideAllowed = false
     }
 }
