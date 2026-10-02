@@ -6,6 +6,11 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
 
     static let minSize = CGSize(width: 230, height: 210)
 
+    /// 桌面图标层：在壁纸和桌面图标之上、在所有应用窗口之下。
+    static var desktopLevel: NSWindow.Level {
+        NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)))
+    }
+
     private let store = Store.shared
     private(set) var boxID: UUID
     let panel: BoxPanel
@@ -52,7 +57,7 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .utilityWindow
         panel.minSize = Self.minSize
-        panel.level = box.floatOnTop ? .floating : .normal
+        panel.level = box.floatOnTop ? .floating : Self.desktopLevel
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         panel.setFrame(LayoutEngine.sanitize(box.frame, minSize: Self.minSize), display: false)
         panel.contentView = hostView
@@ -142,7 +147,7 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
 
     func apply(_ newBox: BoxConfig) {
         box = newBox
-        let targetLevel: NSWindow.Level = newBox.floatOnTop ? .floating : .normal
+        let targetLevel: NSWindow.Level = newBox.floatOnTop ? .floating : Self.desktopLevel
         if panel.level != targetLevel { panel.level = targetLevel }
 
         if !isAdjustingFrame, dragStartFrame == nil, resizeStartFrame == nil {

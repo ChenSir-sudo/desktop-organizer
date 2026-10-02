@@ -141,7 +141,7 @@ struct BoxSettingsPage: View {
 
     private var floatToggle: some View {
         Toggle(isOn: binding(\BoxConfig.floatOnTop, fallback: true)) {
-            Text("窗口置顶").font(.system(size: 11.5))
+            Text("浮在最上层").font(.system(size: 11.5))
         }
         .toggleStyle(.switch)
         .controlSize(.mini)

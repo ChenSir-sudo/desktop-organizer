@@ -85,7 +85,7 @@ struct BoxConfig: Codable, Identifiable, Equatable {
     var opacity: Double = 0.8
     var material: BoxMaterial = .hud
     var cornerRadius: Double = 20
-    var floatOnTop: Bool = true
+    var floatOnTop: Bool = false
     var accentHex: String = "0A84FF"
     /// 1.0 用它记录「搬移目标文件夹」。现在只用于一次性迁移，之后不再有任何搬移行为。
     var legacyFolderPath: String? = nil
@@ -114,7 +114,7 @@ struct BoxConfig: Codable, Identifiable, Equatable {
         opacity = value(.opacity, 0.8)
         material = value(.material, .hud)
         cornerRadius = value(.cornerRadius, 20)
-        floatOnTop = value(.floatOnTop, true)
+        floatOnTop = value(.floatOnTop, false)
         accentHex = value(.accentHex, "0A84FF")
         legacyFolderPath = ((try? c.decodeIfPresent(String.self, forKey: .legacyFolderPath)) ?? nil)
             ?? ((try? c.decodeIfPresent(String.self, forKey: .folderPath)) ?? nil)
@@ -162,10 +162,14 @@ struct Preferences: Codable, Equatable {
     var defaultOpacity: Double = 0.8
     var defaultMaterial: BoxMaterial = .hud
     var defaultCornerRadius: Double = 20
-    var defaultFloatOnTop: Bool = true
+    var defaultFloatOnTop: Bool = false
     var confirmBeforeCategorize: Bool = true
     var showMenuBarIcon: Bool = true
     var openMainWindowOnLaunch: Bool = true
+    /// 装进「应用程序」后自动清掉安装包
+    var removeInstallerAfterInstall: Bool = true
+    /// 一次性开关，避免以后把新下载的安装包也删掉
+    var didRunInstallerCleanup: Bool = false
 
     init() {}
 
@@ -177,17 +181,23 @@ struct Preferences: Codable, Equatable {
         defaultOpacity = value(.defaultOpacity, 0.8)
         defaultMaterial = value(.defaultMaterial, .hud)
         defaultCornerRadius = value(.defaultCornerRadius, 20)
-        defaultFloatOnTop = value(.defaultFloatOnTop, true)
+        defaultFloatOnTop = value(.defaultFloatOnTop, false)
         confirmBeforeCategorize = value(.confirmBeforeCategorize, true)
         showMenuBarIcon = value(.showMenuBarIcon, true)
         openMainWindowOnLaunch = value(.openMainWindowOnLaunch, true)
+        removeInstallerAfterInstall = value(.removeInstallerAfterInstall, true)
+        didRunInstallerCleanup = value(.didRunInstallerCleanup, false)
     }
 }
 
 // MARK: - 落盘结构
 
+/// 配置格式版本。save() 和迁移判断必须用同一个值，
+/// 否则写回去的还是旧版本号，迁移会在每次启动时重跑 —— 用户就永远打不开置顶了。
+private let kConfigVersion = 3
+
 private struct AppConfig: Codable {
-    var version: Int = 2
+    var version: Int = kConfigVersion
     var boxes: [BoxConfig] = []
     var prefs: Preferences = Preferences()
 }
@@ -219,12 +229,23 @@ final class Store: ObservableObject {
             boxes = config.boxes
             prefs = config.prefs
             migrateLegacyFolders()
+            migrateToDesktopLayer(from: config.version)
         }
 
         if boxes.isEmpty && !hadConfig {
             createStarterBoxes()
         }
         save()
+    }
+
+    /// v3 起整理框默认贴在桌面层（在应用窗口下面），而不是浮在所有窗口之上。
+    /// 老配置里的窗口一次性落到桌面层，用户可以逐个再打开置顶。
+    private func migrateToDesktopLayer(from version: Int) {
+        guard version < kConfigVersion else { return }
+        for index in boxes.indices {
+            boxes[index].floatOnTop = false
+        }
+        prefs.defaultFloatOnTop = false
     }
 
     /// 1.0 的整理框绑定「搬移目标文件夹」。升级后把该文件夹里已有的内容导入成**引用**，
@@ -245,7 +266,7 @@ final class Store: ObservableObject {
     func save() {
         saveWorkItem?.cancel()
         saveWorkItem = nil
-        let config = AppConfig(version: 2, boxes: boxes, prefs: prefs)
+        let config = AppConfig(version: kConfigVersion, boxes: boxes, prefs: prefs)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(config) else { return }

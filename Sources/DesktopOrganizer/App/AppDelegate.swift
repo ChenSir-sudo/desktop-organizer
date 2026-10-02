@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         BoxWindowManager.shared.sync(store.boxes)
 
         setupStatusItem()
+        InstallerCleanup.runIfNeeded()
         Diagnostics.runIfRequested()
 
         if store.prefs.openMainWindowOnLaunch {

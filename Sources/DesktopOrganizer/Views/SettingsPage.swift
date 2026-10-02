@@ -61,7 +61,7 @@ struct SettingsPage: View {
                             .monospacedDigit()
                     }
                     Toggle(isOn: binding(\.defaultFloatOnTop)) {
-                        Text("新整理框默认窗口置顶").font(.system(size: 11.5))
+                        Text("新整理框默认浮在最上层").font(.system(size: 11.5))
                     }
                     .toggleStyle(.switch)
                     .controlSize(.mini)
@@ -91,6 +91,11 @@ struct SettingsPage: View {
                     .controlSize(.mini)
                     Toggle(isOn: binding(\.showMenuBarIcon)) {
                         Text("在菜单栏显示图标").font(.system(size: 11.5))
+                    }
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    Toggle(isOn: binding(\.removeInstallerAfterInstall)) {
+                        Text("装好后自动删除安装包").font(.system(size: 11.5))
                     }
                     .toggleStyle(.switch)
                     .controlSize(.mini)
