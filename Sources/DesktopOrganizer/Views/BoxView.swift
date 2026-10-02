@@ -79,7 +79,10 @@ struct BoxView: View {
         }
     }
 
-    static let dropTypes: [UTType] = [DragPayload.utType, .fileURL]
+    /// 只注册内部拖拽用的自定义类型。外部文件（public.file-url）由
+    /// BoxContentView 在 AppKit 层接收 —— SwiftUI 那条链路在 LazyVGrid /
+    /// ScrollView / 卡片之间路由不稳定，实测「拖到格子上能进、拖到空白处进不去」。
+    static let dropTypes: [UTType] = [DragPayload.utType]
 
     private var dropTargetBinding: Binding<Bool> {
         Binding(
@@ -114,12 +117,6 @@ struct BoxView: View {
                     DragSession.shared.handled = true
                     Commands.transfer(itemID: payload.itemID, from: payload.boxID, to: boxID, at: model.items.count)
                     DragSession.shared.finish()
-                }
-                handled = true
-            } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                _ = provider.loadObject(ofClass: NSURL.self) { object, _ in
-                    guard let url = object as? URL else { return }
-                    DispatchQueue.main.async { actions.handleDrop([url]) }
                 }
                 handled = true
             }
@@ -278,7 +275,7 @@ struct BoxView: View {
                             dragPreview(for: item)
                         }
                         .onDrop(
-                            of: [DragPayload.utType, .fileURL],
+                            of: [DragPayload.utType],
                             delegate: ItemDropDelegate(
                                 targetIndex: index,
                                 boxID: boxID,
@@ -386,7 +383,7 @@ struct ItemDropDelegate: DropDelegate {
     /// 必须同时接受外部文件 URL。只认自定义类型的话，格子一多就会铺满整个框，
     /// 从访达拖进来的文件落在格子上会被拒绝，表现成「文件一多就拖不进去」。
     func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [DragPayload.utType, UTType.fileURL])
+        info.hasItemsConforming(to: [DragPayload.utType])
     }
 
     func dropEntered(info: DropInfo) {
@@ -421,30 +418,7 @@ struct ItemDropDelegate: DropDelegate {
             return true
         }
 
-        // 外部文件
-        let providers = info.itemProviders(for: [UTType.fileURL])
-        guard !providers.isEmpty else { return false }
-        let folder = targetItem
-        session.folderDropTargetID = nil
-
-        DragPayload.loadFileURLs(from: providers) { urls in
-            guard !urls.isEmpty else { return }
-
-            // 落在文件夹图标上 -> 移进那个文件夹；落在文件图标上 -> 加进整理框
-            if folder.exists, folder.isDirectory {
-                let outcome = FileActions.move(urls, into: folder.url)
-                BoxWindowManager.shared.refreshAll()
-                if !outcome.failures.isEmpty {
-                    FileActions.info(
-                        title: "有 \(outcome.failures.count) 项没能移入「\(folder.name)」",
-                        message: outcome.failures.map { "\($0.url.lastPathComponent)：\($0.reason)" }.joined(separator: "\n")
-                    )
-                }
-            } else {
-                Commands.add(urls, to: boxID, at: targetIndex)
-            }
-        }
-        return true
+        return false
     }
 }
 

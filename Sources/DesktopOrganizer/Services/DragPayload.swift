@@ -11,7 +11,10 @@ struct DragPayload: Equatable {
     var itemID: UUID
 
     static let typeIdentifier = "com.chenziyang.desktoporganizer.item"
-    static var utType: UTType { UTType(typeIdentifier) ?? .data }
+    /// 用 exportedAs：这个标识符已在 Info.plist 的 UTExportedTypeDeclarations 里声明，
+    /// 否则 UTType(...) 会返回 nil（之前退化成 .data，SwiftUI 干脆没注册落点，
+    /// 内部拖拽重排就悄悄失效了）。
+    static var utType: UTType { UTType(exportedAs: typeIdentifier) }
 
     init(boxID: UUID, itemID: UUID) {
         self.boxID = boxID

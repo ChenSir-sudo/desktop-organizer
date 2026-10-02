@@ -21,6 +21,7 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
     let ui = BoxUIState()
 
     private var hostView: NSHostingView<AnyView>
+    private let dropContainer = BoxContentView(frame: .zero)
     private var box: BoxConfig
     private var cancellables = Set<AnyCancellable>()
 
@@ -64,8 +65,23 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         panel.level = box.floatOnTop ? .floating : Self.normalLevel
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         panel.setFrame(LayoutEngine.sanitize(box.frame, minSize: Self.minSize), display: false)
-        panel.contentView = hostView
+
+        // 内容视图是负责接收外部拖拽的 AppKit 视图；SwiftUI 宿主视图铺在它上面。
+        // SwiftUI 那边不再注册 file-url（只保留内部拖拽用的自定义类型），
+        // 所以外部文件一定会落到这层。
+        dropContainer.autoresizingMask = [.width, .height]
+        dropContainer.frame = CGRect(origin: .zero, size: panel.frame.size)
         hostView.autoresizingMask = [.width, .height]
+        hostView.frame = dropContainer.bounds
+        dropContainer.addSubview(hostView)
+        panel.contentView = dropContainer
+
+        dropContainer.onFileDrop = { [weak self] urls, _ in
+            self?.handleDrop(urls)
+        }
+        dropContainer.onTargetingChanged = { [weak self] targeting in
+            self?.ui.isDropTargeted = targeting
+        }
     }
 
     private func buildContent() {
