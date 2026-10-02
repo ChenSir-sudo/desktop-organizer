@@ -77,6 +77,8 @@ final class DragSession: ObservableObject {
 
     /// 当前正在被拖动的条目
     @Published var payload: DragPayload?
+    /// 外部文件正悬停在哪个文件夹图标上（用来提示「会放进这个文件夹」）
+    @Published var folderDropTargetID: UUID?
     /// 是否已经被某个整理框接住了（用来区分「拖到别的框」和「拖出去丢掉」）
     @Published var handled = false
 
@@ -88,5 +90,6 @@ final class DragSession: ObservableObject {
     func finish() {
         payload = nil
         handled = false
+        folderDropTargetID = nil
     }
 }

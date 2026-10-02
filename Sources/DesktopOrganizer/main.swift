@@ -10,6 +10,10 @@ if arguments.contains("--selftest") {
     HeadlessTools.selfTest()
     exit(0)
 }
+if arguments.contains("--droptest") {
+    HeadlessTools.dropTest()
+    exit(0)
+}
 if arguments.contains("--hidetest") {
     HeadlessTools.hideTest()
     exit(0)

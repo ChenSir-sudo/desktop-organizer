@@ -72,15 +72,18 @@ struct BoxView: View {
         .overlay(alignment: .bottomTrailing) { resizeGrip }
         .shadow(color: .black.opacity(0.28), radius: 14, x: 0, y: 7)
         .animation(.easeOut(duration: 0.15), value: ui.isDropTargeted)
-        .onDrop(
-            of: [DragPayload.utType, .fileURL],
-            isTargeted: Binding(
-                get: { ui.isDropTargeted },
-                set: { targeted in withAnimation(.easeOut(duration: 0.14)) { ui.isDropTargeted = targeted } }
-            )
-        ) { providers in
+        .onDrop(of: Self.dropTypes, isTargeted: dropTargetBinding) { providers in
             handleProviders(providers)
         }
+    }
+
+    static let dropTypes: [UTType] = [DragPayload.utType, .fileURL]
+
+    private var dropTargetBinding: Binding<Bool> {
+        Binding(
+            get: { ui.isDropTargeted },
+            set: { targeted in withAnimation(.easeOut(duration: 0.14)) { ui.isDropTargeted = targeted } }
+        )
     }
 
     @ViewBuilder
@@ -264,6 +267,7 @@ struct BoxView: View {
                         ItemTile(
                             item: item,
                             isBeingDragged: session.payload?.itemID == item.id,
+                            isFolderDropTarget: session.folderDropTargetID == item.id,
                             actions: actions
                         )
                         .onDrag {
@@ -278,6 +282,7 @@ struct BoxView: View {
                             delegate: ItemDropDelegate(
                                 targetIndex: index,
                                 boxID: boxID,
+                                targetItem: item,
                                 model: model,
                                 session: session
                             )
@@ -290,6 +295,10 @@ struct BoxView: View {
                 .animation(.spring(response: 0.32, dampingFraction: 0.82), value: model.items)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // 有内容时 ScrollView 铺满整块，空白处的落点会被它吃掉
+            .onDrop(of: Self.dropTypes, isTargeted: dropTargetBinding) { providers in
+                handleProviders(providers)
+            }
         }
     }
 
@@ -313,6 +322,9 @@ struct BoxView: View {
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.vertical, 20)
+        .onDrop(of: Self.dropTypes, isTargeted: dropTargetBinding) { providers in
+            handleProviders(providers)
+        }
     }
 
     // MARK: 右下角缩放
@@ -367,6 +379,7 @@ struct BoxView: View {
 struct ItemDropDelegate: DropDelegate {
     let targetIndex: Int
     let boxID: UUID
+    let targetItem: ResolvedItem
     @ObservedObject var model: BoxItemsModel
     @ObservedObject var session: DragSession
 
@@ -377,10 +390,22 @@ struct ItemDropDelegate: DropDelegate {
     }
 
     func dropEntered(info: DropInfo) {
-        guard let payload = session.payload, payload.boxID == boxID else { return }
-        session.handled = true
-        Store.shared.moveItem(in: boxID, itemID: payload.itemID, to: targetIndex)
-        model.refresh(force: true)
+        if let payload = session.payload, payload.boxID == boxID {
+            session.handled = true
+            Store.shared.moveItem(in: boxID, itemID: payload.itemID, to: targetIndex)
+            model.refresh(force: true)
+            return
+        }
+        // 外部文件悬停在文件夹图标上：高亮，提示「会放进这个文件夹」
+        if targetItem.exists, targetItem.isDirectory {
+            session.folderDropTargetID = targetItem.id
+        }
+    }
+
+    func dropExited(info: DropInfo) {
+        if session.folderDropTargetID == targetItem.id {
+            session.folderDropTargetID = nil
+        }
     }
 
     func performDrop(info: DropInfo) -> Bool {
@@ -399,13 +424,29 @@ struct ItemDropDelegate: DropDelegate {
             return true
         }
 
-        // 外部文件落在某个格子上：插到这个位置
+        // 外部文件
         let providers = info.itemProviders(for: [UTType.fileURL])
         guard !providers.isEmpty else { return false }
+        let folder = targetItem
+        session.folderDropTargetID = nil
+
         DragPayload.loadFileURLs(from: providers) { urls in
             guard !urls.isEmpty else { return }
-            Store.shared.addItems(urls, to: boxID, at: targetIndex)
-            model.refresh(force: true)
+
+            // 落在文件夹图标上 -> 移进那个文件夹；落在文件图标上 -> 加进整理框
+            if folder.exists, folder.isDirectory {
+                let outcome = FileActions.move(urls, into: folder.url)
+                BoxWindowManager.shared.refreshAll()
+                if !outcome.failures.isEmpty {
+                    FileActions.info(
+                        title: "有 \(outcome.failures.count) 项没能移入「\(folder.name)」",
+                        message: outcome.failures.map { "\($0.url.lastPathComponent)：\($0.reason)" }.joined(separator: "\n")
+                    )
+                }
+            } else {
+                Store.shared.addItems(urls, to: boxID, at: targetIndex)
+                model.refresh(force: true)
+            }
         }
         return true
     }
@@ -416,6 +457,7 @@ struct ItemDropDelegate: DropDelegate {
 struct ItemTile: View {
     let item: ResolvedItem
     let isBeingDragged: Bool
+    let isFolderDropTarget: Bool
     let actions: BoxActions
 
     @State private var hovering = false
@@ -444,8 +486,14 @@ struct ItemTile: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(hovering ? 0.10 : 0))
+                .fill(Color.accentColor.opacity(isFolderDropTarget ? 0.28 : (hovering ? 0.10 : 0)))
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.accentColor.opacity(isFolderDropTarget ? 0.9 : 0), lineWidth: 2)
+        )
+        .scaleEffect(isFolderDropTarget ? 1.08 : 1)
+        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isFolderDropTarget)
         .opacity(isBeingDragged ? 0.35 : 1)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }

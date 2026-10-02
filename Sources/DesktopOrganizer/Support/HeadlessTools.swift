@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 /// 无界面自检：
 ///   --scan      只看桌面会被怎么归类，不写任何东西
@@ -103,6 +104,56 @@ enum HeadlessTools {
         try? fm.removeItem(at: root)
     }
 
+    /// 验证拖拽落地时「从 NSItemProvider 里取文件 URL」这条路径，
+    /// 分别拿一个文件夹和一个 .md 文件对比。
+    static func dropTest() {
+        let desktop = AppPaths.desktopDirectory
+        let samples = [
+            desktop.appendingPathComponent("CONTEXT-领域模型.md"),
+            desktop.appendingPathComponent("公司企业画像与业务.md"),
+            desktop.appendingPathComponent("TradePilot"),
+        ]
+        for url in samples {
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                print("跳过（不存在）: \(url.lastPathComponent)")
+                continue
+            }
+            print("== \(url.lastPathComponent) \(isDirectory(url) ? "[文件夹]" : "[文件]") ==")
+            guard let provider = NSItemProvider(contentsOf: url) else {
+                print("   !! NSItemProvider(contentsOf:) 返回 nil")
+                continue
+            }
+            print("   registeredTypes: \(provider.registeredTypeIdentifiers)")
+            print("   hasItemConformingToTypeIdentifier(fileURL): \(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))")
+
+            let sem1 = DispatchSemaphore(value: 0)
+            provider.loadObject(ofClass: NSURL.self) { object, error in
+                print("   loadObject(NSURL) -> \(object.map { "\($0)" } ?? "nil")  err=\(error?.localizedDescription ?? "-")")
+                sem1.signal()
+            }
+            _ = sem1.wait(timeout: .now() + 3)
+
+            let sem2 = DispatchSemaphore(value: 0)
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
+                var desc = "nil"
+                if let data = item as? Data, let s = String(data: data, encoding: .utf8) { desc = "Data -> \(s)" }
+                else if let u = item as? URL { desc = "URL -> \(u.path)" }
+                else if let u = item as? NSURL { desc = "NSURL -> \(u.path ?? "-")" }
+                else if let item { desc = "\(type(of: item))" }
+                print("   loadItem(fileURL) -> \(desc)  err=\(error?.localizedDescription ?? "-")")
+                sem2.signal()
+            }
+            _ = sem2.wait(timeout: .now() + 3)
+            print("")
+        }
+    }
+
+    private static func isDirectory(_ url: URL) -> Bool {
+        var d: ObjCBool = false
+        FileManager.default.fileExists(atPath: url.path, isDirectory: &d)
+        return d.boolValue
+    }
+
     static func scan() {
         Store.shared.load()
         let groups = DeskCategorizer.scanDesktop()
@@ -126,6 +177,10 @@ enum HeadlessTools {
     /// 核心断言：往整理框里加条目之后，磁盘上的文件必须还在原处。
     static func selfTest() {
         var failures = 0
+        func check(_ name: String, _ ok: Bool) {
+            if !ok { failures += 1 }
+            print("  \(ok ? "OK " : "!! ") \(name)")
+        }
         let fm = FileManager.default
         let root = URL(fileURLWithPath: fm.currentDirectoryPath)
             .appendingPathComponent(".cache/selftest", isDirectory: true)
@@ -202,10 +257,7 @@ enum HeadlessTools {
             Store.shared.moveItem(in: box.id, itemID: firstID, to: 2)
         }
         let orderAfter = Store.shared.box(id: box.id)?.items.map(\.name) ?? []
-        func check(_ name: String, _ ok: Bool) {
-            if !ok { failures += 1 }
-            print("  \(ok ? "OK " : "!! ") \(name)")
-        }
+
         check("重排把首项挪到了第 3 位", orderAfter.count == orderBefore.count && orderAfter[2] == orderBefore[0])
         check("重排没有丢条目", Set(orderAfter) == Set(orderBefore))
 
@@ -229,6 +281,34 @@ enum HeadlessTools {
 
 
         try? fm.removeItem(at: root)
+        // 移入文件夹（拖到文件夹图标上）—— 这是唯一真正移动文件的操作
+        print("")
+        print("== 移入文件夹 ==")
+        let inbox = root.appendingPathComponent("收件箱", isDirectory: true)
+        let staging = root.appendingPathComponent("staging", isDirectory: true)
+        try? fm.createDirectory(at: inbox, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        let loose = staging.appendingPathComponent("待归档.txt")
+        try? "x".write(to: loose, atomically: true, encoding: .utf8)
+
+        let moved = FileActions.move([loose], into: inbox)
+        check("移入成功", moved.moved.count == 1 && moved.failures.isEmpty)
+        check("原位置已不存在", !fm.fileExists(atPath: loose.path))
+        check("已出现在目标文件夹", fm.fileExists(atPath: inbox.appendingPathComponent("待归档.txt").path))
+
+        // 同名冲突不覆盖
+        try? "y".write(to: loose, atomically: true, encoding: .utf8)
+        let again = FileActions.move([loose], into: inbox)
+        check("同名时不覆盖，自动改名", again.moved.first?.lastPathComponent == "待归档 2.txt")
+
+        // 不能把文件夹移进它自己
+        let selfMove = FileActions.move([inbox], into: inbox.appendingPathComponent("子目录", isDirectory: true))
+        check("拒绝移进子目录", selfMove.moved.isEmpty && !selfMove.failures.isEmpty)
+
+        // 受保护路径
+        let protectedMove = FileActions.move([Bundle.main.bundleURL], into: inbox)
+        check("拒绝搬移程序自身", protectedMove.moved.isEmpty)
+
         print("")
         print(failures == 0 ? "自检结束：全部通过 ✓" : "自检结束：有 \(failures) 项失败 ✗")
     }

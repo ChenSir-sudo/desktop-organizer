@@ -212,7 +212,8 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         let dy = mouse.y - mouse0.y
         var frame = start
         let newWidth = max(Self.minSize.width, start.width + dx)
-        let newHeight = max(Self.minSize.height, start.height + dy)
+        // 屏幕坐标 y 向上：往下拖 dy 为负，高度应当变大，所以是减不是加
+        let newHeight = max(Self.minSize.height, start.height - dy)
         frame.size = CGSize(width: newWidth, height: newHeight)
         frame.origin.x = start.minX
         frame.origin.y = start.maxY - newHeight      // 固定左上角

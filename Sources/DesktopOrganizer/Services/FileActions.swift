@@ -51,6 +51,84 @@ enum FileActions {
         NSWorkspace.shared.open([directory], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
     }
 
+    struct MoveOutcome {
+        var moved: [URL] = []
+        var failures: [(url: URL, reason: String)] = []
+    }
+
+    /// 把文件移进某个文件夹。
+    /// 只有用户明确把文件拖到某个文件夹图标上才会走到这里 —— 这是显式意图，
+    /// 但仍然拒绝受保护路径，并且不覆盖同名文件。
+    static func move(_ urls: [URL], into folder: URL) -> MoveOutcome {
+        let fm = FileManager.default
+        var outcome = MoveOutcome()
+        let destinationRoot = folder.standardizedFileURL
+
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: destinationRoot.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            outcome.failures = urls.map { ($0, "目标不是文件夹") }
+            return outcome
+        }
+
+        for source in urls {
+            let src = source.standardizedFileURL
+            guard fm.fileExists(atPath: src.path) else {
+                outcome.failures.append((src, "文件不存在")); continue
+            }
+            if src.deletingLastPathComponent().path == destinationRoot.path { continue }   // 已经在里面
+            if destinationRoot.path.hasPrefix(src.path + "/") {
+                outcome.failures.append((src, "不能把文件夹移进它自己")); continue
+            }
+            if BoxConfig.isProtected(src) {
+                outcome.failures.append((src, "受保护的路径")); continue
+            }
+
+            let destination = uniqueDestination(for: src, in: destinationRoot)
+            do {
+                try fm.moveItem(at: src, to: destination)
+                outcome.moved.append(destination)
+            } catch {
+                // 跨宗卷时退化成复制 + 删除
+                do {
+                    try fm.copyItem(at: src, to: destination)
+                    try fm.removeItem(at: src)
+                    outcome.moved.append(destination)
+                } catch {
+                    outcome.failures.append((src, error.localizedDescription))
+                }
+            }
+        }
+        return outcome
+    }
+
+    /// 同名文件自动加序号，绝不覆盖。
+    private static func uniqueDestination(for source: URL, in folder: URL) -> URL {
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        fm.fileExists(atPath: source.path, isDirectory: &isDirectory)
+
+        let name = source.lastPathComponent
+        var candidate = folder.appendingPathComponent(name)
+        if !fm.fileExists(atPath: candidate.path) { return candidate }
+
+        let base: String
+        let ext: String
+        if isDirectory.boolValue {
+            base = name; ext = ""
+        } else {
+            base = (name as NSString).deletingPathExtension
+            ext = (name as NSString).pathExtension
+        }
+        var counter = 2
+        while counter < 9999 {
+            let next = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
+            candidate = folder.appendingPathComponent(next)
+            if !fm.fileExists(atPath: candidate.path) { return candidate }
+            counter += 1
+        }
+        return folder.appendingPathComponent("\(UUID().uuidString)-\(name)")
+    }
+
     static func copyPath(_ url: URL) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
