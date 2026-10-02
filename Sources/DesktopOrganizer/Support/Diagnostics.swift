@@ -21,6 +21,28 @@ enum Diagnostics {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
             var output = snapshot("初始状态")
+            if environment["DO_DIAG_WINDOWS"] != nil {
+                output += "\n\n## 窗口前后顺序（0 在最前）\n" + dumpWindowOrder()
+            }
+
+            // 验证「把被盖住的整理框叫到前面」
+            if environment["DO_DIAG_SUMMON"] != nil, let first = Store.shared.boxes.first {
+                BoxWindowManager.shared.controller(for: first.id)?.summon()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4.5) {
+                    var after = "\n\n## summon 4.5s 后（应已落回桌面层）\n"
+                    for window in NSApp.windows where window is BoxPanel {
+                        after += "  BoxPanel level=\(window.level.rawValue) visible=\(window.isVisible)\n"
+                    }
+                    after += "\n## summon 之后的窗口顺序\n" + dumpWindowOrder()
+                    after += "\n\n## summon 0.8s 后的面板层级\n"
+                    for window in NSApp.windows {
+                        after += "  \(type(of: window)) level=\(window.level.rawValue)"
+                            + " visible=\(window.isVisible) frame=\(NSStringFromRect(window.frame))\n"
+                    }
+                    try? (output + after).write(toFile: path, atomically: true, encoding: .utf8)
+                }
+                return
+            }
 
             guard environment["DO_DIAG_PAGE"] != nil,
                   let first = Store.shared.boxes.first,
@@ -35,6 +57,26 @@ enum Diagnostics {
                 try? output.write(toFile: path, atomically: true, encoding: .utf8)
             }
         }
+    }
+
+    /// 转储屏幕上所有窗口的前后顺序（front-to-back），用来判断我们的窗口
+    /// 是不是被别人的窗口压在下面 —— 压住了就点不中。
+    static func dumpWindowOrder() -> String {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
+                as? [[String: Any]] else { return "（拿不到窗口列表）" }
+        var lines: [String] = []
+        for (index, info) in list.prefix(24).enumerated() {
+            let owner = info[kCGWindowOwnerName as String] as? String ?? "?"
+            let name = info[kCGWindowName as String] as? String ?? ""
+            let level = info[kCGWindowLayer as String] as? Int ?? 0
+            var bounds = "?"
+            if let dict = info[kCGWindowBounds as String] as? [String: Any],
+               let rect = CGRect(dictionaryRepresentation: dict as CFDictionary) {
+                bounds = NSStringFromRect(rect)
+            }
+            lines.append("  \(index). [\(level)] \(owner) \(name.isEmpty ? "" : "\"\(name)\"") \(bounds)")
+        }
+        return lines.joined(separator: "\n")
     }
 
     private static func snapshot(_ title: String) -> String {

@@ -2,6 +2,11 @@ import AppKit
 
 // 命令行辅助模式（不启动界面）
 let arguments = CommandLine.arguments
+if arguments.contains("--scan") || arguments.contains("--selftest")
+    || arguments.contains("--snaptest") || arguments.contains("--hidetest")
+    || arguments.contains("--droptest") {
+    Store.shared.persistenceSuppressed = true
+}
 if arguments.contains("--scan") {
     HeadlessTools.scan()
     exit(0)

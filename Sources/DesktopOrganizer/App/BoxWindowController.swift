@@ -28,6 +28,7 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
     private var resizeStartMouse: CGPoint?
     private var isAdjustingFrame = false
     private var persistWorkItem: DispatchWorkItem?
+    private var summonWorkItem: DispatchWorkItem?
 
     init(box: BoxConfig) {
         self.box = box
@@ -129,6 +130,27 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         panel.delegate = nil
         panel.orderOut(nil)
         panel.close()
+    }
+
+    /// 把整理框临时提到最前，几秒后再落回配置的层级。
+    ///
+    /// 桌面层的框会被任何应用窗口盖住 —— 没有这个机制的话，一旦被盖住就再也
+    /// 够不着它了（既点不中，也没法通过拖动露出来）。菜单栏的「整理框」列表和
+    /// 主窗口卡片上的「定位」都会走这里。
+    func summon() {
+        let configured = box.floatOnTop ? NSWindow.Level.floating : Self.desktopLevel
+        summonWorkItem?.cancel()
+        panel.level = .floating
+        panel.orderFrontRegardless()
+        flash()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.panel.level = configured
+            // 落回桌面层后仍要保证它是该层里靠前的
+            self.panel.orderFrontRegardless()
+        }
+        summonWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: item)
     }
 
     func flash() {

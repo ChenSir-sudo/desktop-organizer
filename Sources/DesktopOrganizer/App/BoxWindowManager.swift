@@ -130,10 +130,11 @@ final class BoxWindowManager {
         }
     }
 
+    /// 定位到某个整理框：如果是被隐藏的，先显示；然后临时提到最前，方便找到它。
     func focus(id: UUID) {
         guard let controller = controllers[id] else { return }
         hiddenIDs.remove(id)
-        controller.flash()
+        controller.summon()
     }
 
     func controller(for id: UUID) -> BoxWindowController? { controllers[id] }

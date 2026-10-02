@@ -241,6 +241,11 @@ final class Store: ObservableObject {
     /// 时谁都不负责恢复 —— 文件就永久隐藏了。
     private(set) var hiddenPaths: Set<String> = []
 
+    /// 无头自检模式（--selftest 等）禁止写盘。
+    /// 那些模式会大量改动 Store，而保存是 0.6 秒防抖的 —— 一旦测试跑得稍慢，
+    /// 防抖就会真的把测试用的临时状态写进用户的真实配置。
+    var persistenceSuppressed = false
+
     private var saveWorkItem: DispatchWorkItem?
     private var isLoading = false
 
@@ -316,7 +321,7 @@ final class Store: ObservableObject {
     }
 
     private func scheduleSave() {
-        guard !isLoading else { return }
+        guard !isLoading, !persistenceSuppressed else { return }
         saveWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in self?.save() }
         saveWorkItem = item
