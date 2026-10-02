@@ -11,10 +11,10 @@ struct DragPayload: Equatable {
     var itemID: UUID
 
     static let typeIdentifier = "com.chenziyang.desktoporganizer.item"
-    /// 用 exportedAs：这个标识符已在 Info.plist 的 UTExportedTypeDeclarations 里声明，
-    /// 否则 UTType(...) 会返回 nil（之前退化成 .data，SwiftUI 干脆没注册落点，
-    /// 内部拖拽重排就悄悄失效了）。
-    static var utType: UTType { UTType(exportedAs: typeIdentifier) }
+    /// 刻意**不**在 Info.plist 里声明这个类型。
+    /// 声明成导出类型（conforms to public.data）后，往桌面/访达拖时系统会把它
+    /// 当文件内容写出来，生成一个叫「整理框条目引用 XX」的垃圾文件。
+    static var utType: UTType { UTType(typeIdentifier) ?? .data }
 
     init(boxID: UUID, itemID: UUID) {
         self.boxID = boxID
@@ -61,6 +61,19 @@ struct DragPayload: Equatable {
             }
         }
         group.notify(queue: .main) { completion(collected) }
+    }
+
+    /// AppKit 层用的粘贴板类型。
+    /// 刻意不声明成导出的 UTI —— 声明过（conforms to public.data）之后，
+    /// 往桌面拖会被系统当成文件内容写出来，生成叫「整理框条目引用 XX」的垃圾文件。
+    static var pasteboardType: NSPasteboard.PasteboardType {
+        NSPasteboard.PasteboardType(typeIdentifier)
+    }
+
+    static func read(from pasteboard: NSPasteboard) -> DragPayload? {
+        guard let data = pasteboard.data(forType: pasteboardType),
+              let string = String(data: data, encoding: .utf8) else { return nil }
+        return DragPayload(string: string)
     }
 
     static func payload(from provider: NSItemProvider, completion: @escaping (DragPayload) -> Void) {

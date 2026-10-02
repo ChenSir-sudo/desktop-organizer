@@ -117,20 +117,28 @@ enum Diagnostics {
             lines.append("  [\(kind)] title=\(window.title) visible=\(window.isVisible)"
                 + " frame=\(NSStringFromRect(window.frame)) level=\(window.level.rawValue)"
                 + " content=\(contentFrame) fitting=\(fitting)")
-            appendDragTargets(window.contentView, depth: 2, into: &lines)
+            appendDragTargets(window.contentView, depth: 6, into: &lines)
         }
         return lines.joined(separator: "\n")
     }
 
     /// 列出视图树里注册了拖拽类型的节点，确认「拖文件进框」的通道确实挂上了。
     private static func appendDragTargets(_ view: NSView?, depth: Int, into lines: inout [String]) {
+        appendDragTargets(view, depth: depth, indent: "      ", into: &lines)
+    }
+
+    private static func appendDragTargets(_ view: NSView?, depth: Int, indent: String,
+                                          into lines: inout [String]) {
         guard let view, depth >= 0 else { return }
         let types = view.registeredDraggedTypes.map(\.rawValue).sorted()
+        let name = String(describing: type(of: view))
         if !types.isEmpty {
-            lines.append("      drag-target \(type(of: view)) -> \(types)")
+            lines.append("\(indent)\(name) -> \(types)")
+        } else if depth >= 4 {
+            lines.append("\(indent)\(name) （未注册）")
         }
         for subview in view.subviews {
-            appendDragTargets(subview, depth: depth - 1, into: &lines)
+            appendDragTargets(subview, depth: depth - 1, indent: indent + "  ", into: &lines)
         }
     }
 }

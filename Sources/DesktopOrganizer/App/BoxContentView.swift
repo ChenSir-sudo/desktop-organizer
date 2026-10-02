@@ -13,14 +13,22 @@ final class BoxContentView: NSView {
 
     /// 外部文件落到窗口里。参数是文件列表和落点（本视图坐标系）。
     var onFileDrop: (([URL], NSPoint) -> Void)?
+    /// 整理框内部的条目落到窗口里。参数是载荷和目标位置。
+    var onItemDrop: ((DragPayload, Int) -> Void)?
     /// 拖拽进入/离开，用来驱动高亮。
     var onTargetingChanged: ((Bool) -> Void)?
+
+    /// 各条目格子在本视图坐标系里的位置（由 SwiftUI 侧上报），
+    /// 用来判断内部条目落到了第几个位置。
+    var tileFrames: [UUID: CGRect] = [:]
+    /// 当前显示顺序，用来把落点换算成插入下标。
+    var orderedItemIDs: [UUID] = []
 
     private static let logURL: URL = AppPaths.supportDirectory.appendingPathComponent("drop.log")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        registerForDraggedTypes([.fileURL])
+        registerForDraggedTypes([.fileURL, DragPayload.pasteboardType])
     }
 
     required init?(coder: NSCoder) {
@@ -29,18 +37,21 @@ final class BoxContentView: NSView {
 
     // MARK: NSDraggingDestination
 
+    private func acceptedOperation(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if hasFileURLs(sender) { return .copy }
+        if DragPayload.read(from: sender.draggingPasteboard) != nil { return .move }
+        return []
+    }
+
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard hasFileURLs(sender) else {
-            log("draggingEntered 但没有文件 URL，types=\(sender.draggingPasteboard.types?.map(\.rawValue) ?? [])")
-            return []
-        }
-        log("draggingEntered 收到文件，types=\(sender.draggingPasteboard.types?.map(\.rawValue) ?? [])")
-        onTargetingChanged?(true)
-        return .copy
+        let op = acceptedOperation(sender)
+        log("draggingEntered types=\(sender.draggingPasteboard.types?.map(\.rawValue) ?? []) -> \(op == [] ? "拒绝" : "接受")")
+        if op != [] { onTargetingChanged?(true) }
+        return op
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        hasFileURLs(sender) ? .copy : []
+        acceptedOperation(sender)
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
@@ -48,17 +59,39 @@ final class BoxContentView: NSView {
     }
 
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        hasFileURLs(sender)
+        acceptedOperation(sender) != []
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         onTargetingChanged?(false)
-        let urls = fileURLs(from: sender)
         let point = convert(sender.draggingLocation, from: nil)
-        log("performDragOperation 落点=\(NSStringFromPoint(point)) 文件数=\(urls.count) -> \(urls.map(\.lastPathComponent))")
+        let pasteboard = sender.draggingPasteboard
+
+        // 内部条目：重排 / 跨框转移
+        if let payload = DragPayload.read(from: pasteboard) {
+            let index = insertionIndex(at: point)
+            log("performDragOperation 内部条目 落点=\(NSStringFromPoint(point)) 目标下标=\(index)")
+            onItemDrop?(payload, index)
+            return true
+        }
+
+        // 外部文件
+        let urls = fileURLs(from: pasteboard)
+        log("performDragOperation 外部文件 落点=\(NSStringFromPoint(point)) 数量=\(urls.count) -> \(urls.map(\.lastPathComponent))")
         guard !urls.isEmpty else { return false }
         onFileDrop?(urls, point)
         return true
+    }
+
+    /// 把窗口坐标的落点换算成插入下标。SwiftUI 的 .global 是左上原点，本视图是左下原点。
+    private func insertionIndex(at point: NSPoint) -> Int {
+        let flipped = NSPoint(x: point.x, y: bounds.height - point.y)
+        for (index, id) in orderedItemIDs.enumerated() {
+            if let frame = tileFrames[id], frame.contains(flipped) {
+                return index
+            }
+        }
+        return orderedItemIDs.count
     }
 
     override func concludeDragOperation(_ sender: NSDraggingInfo?) {
@@ -68,11 +101,15 @@ final class BoxContentView: NSView {
     // MARK: 取文件
 
     private func hasFileURLs(_ sender: NSDraggingInfo) -> Bool {
-        sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+        hasFileURLs(sender.draggingPasteboard)
     }
 
-    private func fileURLs(from sender: NSDraggingInfo) -> [URL] {
-        let objects = sender.draggingPasteboard.readObjects(
+    private func hasFileURLs(_ pasteboard: NSPasteboard) -> Bool {
+        pasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+    }
+
+    private func fileURLs(from pasteboard: NSPasteboard) -> [URL] {
+        let objects = pasteboard.readObjects(
             forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]
         )

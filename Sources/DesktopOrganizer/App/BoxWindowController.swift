@@ -79,6 +79,16 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         dropContainer.onFileDrop = { [weak self] urls, _ in
             self?.handleDrop(urls)
         }
+        dropContainer.onItemDrop = { [weak self] payload, index in
+            guard let self else { return }
+            DragSession.shared.handled = true
+            if payload.boxID == self.boxID {
+                Commands.reorder(in: self.boxID, itemID: payload.itemID, to: index)
+            } else {
+                Commands.transfer(itemID: payload.itemID, from: payload.boxID, to: self.boxID, at: index)
+            }
+            DragSession.shared.finish()
+        }
         dropContainer.onTargetingChanged = { [weak self] targeting in
             self?.ui.isDropTargeted = targeting
         }
@@ -111,6 +121,10 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
             trashItem: { [weak self] url in self?.confirmTrash(url) },
             toggleItemHidden: { id, hidden in
                 Commands.toggleHidden(hidden, itemID: id, in: self.boxID)
+            },
+            updateTileFrames: { [weak self] frames, order in
+                self?.dropContainer.tileFrames = frames
+                self?.dropContainer.orderedItemIDs = order
             },
             clearItems: { [weak self] in self?.confirmClear() }
         )

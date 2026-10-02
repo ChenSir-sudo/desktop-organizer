@@ -25,6 +25,8 @@ struct BoxActions {
     var removeItem: (UUID) -> Void = { _ in }
     var trashItem: (URL) -> Void = { _ in }
     var toggleItemHidden: (UUID, Bool) -> Void = { _, _ in }
+    /// 上报各条目格子的位置和顺序，供 AppKit 层把落点换算成插入下标
+    var updateTileFrames: ([UUID: CGRect], [UUID]) -> Void = { _, _ in }
     var clearItems: () -> Void = {}
 }
 
@@ -74,21 +76,10 @@ struct BoxView: View {
         .overlay(alignment: .bottomTrailing) { resizeGrip }
         .shadow(color: .black.opacity(0.28), radius: 14, x: 0, y: 7)
         .animation(.easeOut(duration: 0.15), value: ui.isDropTargeted)
-        .onDrop(of: Self.dropTypes, isTargeted: dropTargetBinding) { providers in
-            handleProviders(providers)
-        }
-    }
-
-    /// 只注册内部拖拽用的自定义类型。外部文件（public.file-url）由
-    /// BoxContentView 在 AppKit 层接收 —— SwiftUI 那条链路在 LazyVGrid /
-    /// ScrollView / 卡片之间路由不稳定，实测「拖到格子上能进、拖到空白处进不去」。
-    static let dropTypes: [UTType] = [DragPayload.utType]
-
-    private var dropTargetBinding: Binding<Bool> {
-        Binding(
-            get: { ui.isDropTargeted },
-            set: { targeted in withAnimation(Motion.dropTarget) { ui.isDropTargeted = targeted } }
-        )
+        // 这里刻意不放任何 .onDrop：SwiftUI 只要检测到 onDrop 就会注册一个
+        // public.data / public.item 的落点，而 public.file-url 符合 public.data，
+        // 于是文件拖拽会被它抢走、根本到不了 AppKit 那层。全部落点统一由
+        // BoxContentView 处理。
     }
 
     @ViewBuilder
@@ -102,26 +93,6 @@ struct BoxView: View {
         } else {
             Color(nsColor: .underPageBackgroundColor).opacity(box.opacity)
         }
-    }
-
-    // MARK: 落点处理
-
-    /// 卡片空白处的落点：处理「从别的框拖过来的条目」和「外部文件」。
-    /// 框内重排由每个格子的 DropDelegate 处理，不会走到这里。
-    private func handleProviders(_ providers: [NSItemProvider]) -> Bool {
-        var handled = false
-        for provider in providers {
-            if provider.hasItemConformingToTypeIdentifier(DragPayload.typeIdentifier) {
-                DragPayload.payload(from: provider) { payload in
-                    guard payload.boxID != boxID else { return }
-                    DragSession.shared.handled = true
-                    Commands.transfer(itemID: payload.itemID, from: payload.boxID, to: boxID, at: model.items.count)
-                    DragSession.shared.finish()
-                }
-                handled = true
-            }
-        }
-        return handled
     }
 
     private var pages: some View {
@@ -260,7 +231,7 @@ struct BoxView: View {
         } else {
             ScrollView(.vertical) {
                 LazyVGrid(columns: columns, spacing: 8) {
-                    ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
+                    ForEach(model.items) { item in
                         ItemTile(
                             item: item,
                             isBeingDragged: session.payload?.itemID == item.id,
@@ -274,15 +245,13 @@ struct BoxView: View {
                         } preview: {
                             dragPreview(for: item)
                         }
-                        .onDrop(
-                            of: [DragPayload.utType],
-                            delegate: ItemDropDelegate(
-                                targetIndex: index,
-                                boxID: boxID,
-                                targetItem: item,
-                                model: model,
-                                session: session
-                            )
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: TileFramePreference.self,
+                                    value: [item.id: geo.frame(in: .global)]
+                                )
+                            }
                         )
                     }
                 }
@@ -292,10 +261,6 @@ struct BoxView: View {
                 .animation(Motion.items, value: model.items)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // 有内容时 ScrollView 铺满整块，空白处的落点会被它吃掉
-            .onDrop(of: Self.dropTypes, isTargeted: dropTargetBinding) { providers in
-                handleProviders(providers)
-            }
         }
     }
 
@@ -319,9 +284,6 @@ struct BoxView: View {
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.vertical, 20)
-        .onDrop(of: Self.dropTypes, isTargeted: dropTargetBinding) { providers in
-            handleProviders(providers)
-        }
     }
 
     // MARK: 右下角缩放
@@ -371,56 +333,6 @@ struct BoxView: View {
     }
 }
 
-// MARK: - 框内重排 / 跨框转移
-
-struct ItemDropDelegate: DropDelegate {
-    let targetIndex: Int
-    let boxID: UUID
-    let targetItem: ResolvedItem
-    @ObservedObject var model: BoxItemsModel
-    @ObservedObject var session: DragSession
-
-    /// 必须同时接受外部文件 URL。只认自定义类型的话，格子一多就会铺满整个框，
-    /// 从访达拖进来的文件落在格子上会被拒绝，表现成「文件一多就拖不进去」。
-    func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [DragPayload.utType])
-    }
-
-    func dropEntered(info: DropInfo) {
-        if let payload = session.payload, payload.boxID == boxID {
-            session.handled = true
-            Store.shared.moveItem(in: boxID, itemID: payload.itemID, to: targetIndex)
-            model.refresh(force: true)
-            return
-        }
-        // 外部文件悬停在文件夹图标上：高亮，提示「会放进这个文件夹」
-        if targetItem.exists, targetItem.isDirectory {
-            session.folderDropTargetID = targetItem.id
-        }
-    }
-
-    func dropExited(info: DropInfo) {
-        if session.folderDropTargetID == targetItem.id {
-            session.folderDropTargetID = nil
-        }
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        // 内部拖拽：重排 / 跨框转移
-        if let payload = session.payload {
-            session.handled = true
-            if payload.boxID == boxID {
-                Commands.reorder(in: boxID, itemID: payload.itemID, to: targetIndex)
-            } else {
-                Commands.transfer(itemID: payload.itemID, from: payload.boxID, to: boxID, at: targetIndex)
-            }
-            DispatchQueue.main.async { session.finish() }
-            return true
-        }
-
-        return false
-    }
-}
 
 // MARK: - 条目格子
 
@@ -508,5 +420,14 @@ struct ItemTile: View {
             Divider()
             Button("移到废纸篓…") { actions.trashItem(item.url) }
         }
+    }
+}
+
+
+/// 收集各条目格子在窗口里的位置（SwiftUI 的 .global 是左上原点）。
+struct TileFramePreference: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] = [:]
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }
