@@ -6,10 +6,13 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
 
     static let minSize = CGSize(width: 230, height: 210)
 
-    /// 桌面图标层：在壁纸和桌面图标之上、在所有应用窗口之下。
-    static var desktopLevel: NSWindow.Level {
-        NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)))
-    }
+    /// 不置顶时用的层级。
+    ///
+    /// 一开始这里用的是 `kCGDesktopIconWindowLevel`（桌面图标层），想让框永远待在
+    /// 所有应用窗口下面。结果是**那个层级属于桌面本身**：一旦框不是创建时的最前状态，
+    /// 鼠标点击和文件拖拽都不会投递给它 —— 看得见却完全够不着。
+    /// 所以回到普通窗口层：不强行压在最上面，但和其它窗口一样可点、可拖、可接收拖入。
+    static let normalLevel: NSWindow.Level = .normal
 
     private let store = Store.shared
     private(set) var boxID: UUID
@@ -58,7 +61,7 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .utilityWindow
         panel.minSize = Self.minSize
-        panel.level = box.floatOnTop ? .floating : Self.desktopLevel
+        panel.level = box.floatOnTop ? .floating : Self.normalLevel
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         panel.setFrame(LayoutEngine.sanitize(box.frame, minSize: Self.minSize), display: false)
         panel.contentView = hostView
@@ -133,12 +136,9 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
     }
 
     /// 把整理框临时提到最前，几秒后再落回配置的层级。
-    ///
-    /// 桌面层的框会被任何应用窗口盖住 —— 没有这个机制的话，一旦被盖住就再也
-    /// 够不着它了（既点不中，也没法通过拖动露出来）。菜单栏的「整理框」列表和
-    /// 主窗口卡片上的「定位」都会走这里。
+    /// 用于「定位」：在框被别的窗口盖住时把它捞出来。
     func summon() {
-        let configured = box.floatOnTop ? NSWindow.Level.floating : Self.desktopLevel
+        let configured = box.floatOnTop ? NSWindow.Level.floating : Self.normalLevel
         summonWorkItem?.cancel()
         panel.level = .floating
         panel.orderFrontRegardless()
@@ -168,7 +168,7 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
 
     func apply(_ newBox: BoxConfig) {
         box = newBox
-        let targetLevel: NSWindow.Level = newBox.floatOnTop ? .floating : Self.desktopLevel
+        let targetLevel: NSWindow.Level = newBox.floatOnTop ? .floating : Self.normalLevel
         if panel.level != targetLevel { panel.level = targetLevel }
 
         if !isAdjustingFrame, dragStartFrame == nil, resizeStartFrame == nil {

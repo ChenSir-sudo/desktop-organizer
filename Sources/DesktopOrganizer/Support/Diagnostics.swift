@@ -19,6 +19,24 @@ enum Diagnostics {
             }
         }
 
+        // 每隔 1.5 秒记录一次「谁拿到了键盘焦点」，用来验证点击是否真的落到整理框上
+        if let keyPath = environment["DO_DIAG_KEY"] {
+            var lines: [String] = []
+            for step in 0..<10 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Double(step) * 1.5) {
+                    let key: String
+                    if let window = NSApp.keyWindow {
+                        let kind = String(describing: type(of: window))
+                        key = "\(kind) \(NSStringFromRect(window.frame))"
+                    } else {
+                        key = "nil"
+                    }
+                    lines.append("t=\(Double(step) * 1.5)s active=\(NSApp.isActive) key=\(key)")
+                    try? lines.joined(separator: "\n").write(toFile: keyPath, atomically: true, encoding: .utf8)
+                }
+            }
+        }
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
             var output = snapshot("初始状态")
             if environment["DO_DIAG_WINDOWS"] != nil {
