@@ -69,9 +69,11 @@ enum Diagnostics {
                 return
             }
 
-            controller.ui.page = .settings
+            // 新方案里整理框是一个纯边框窗口，没有"设置页"可切了；
+            // 这里改成把框提到最前来验证图层切换。
+            controller.summon()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                output += "\n\n" + snapshot("切到设置页后（窗口尺寸应保持不变）")
+                output += "\n\n" + snapshot("把框提到最前后")
                 try? output.write(toFile: path, atomically: true, encoding: .utf8)
             }
         }

@@ -31,7 +31,8 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             onFocusBox: { BoxWindowManager.shared.focus(id: $0) },
             onDeleteBox: { [weak self] in self?.deleteBox($0) },
             onToggleHidden: { [weak self] in self?.toggleHidden($0) },
-            onCategorize: { [weak self] in self?.categorize() }
+            onCategorize: { [weak self] in self?.categorize() },
+            onTidyBox: { [weak self] in self?.tidyBox($0) }
         )
         .environmentObject(Store.shared)
 
@@ -68,6 +69,15 @@ final class MainWindowController: NSObject, NSWindowDelegate {
 
     private func toggleHidden(_ id: UUID) {
         BoxWindowManager.shared.setHidden(!BoxWindowManager.shared.isHidden(id: id), id: id)
+        ui.revision += 1
+    }
+
+    private func tidyBox(_ id: UUID) {
+        let placed = BoxWindowManager.shared.tidy(boxID: id)
+        if placed == 0 {
+            FileActions.info(title: "这个框里没有图标",
+                             message: "把桌面图标拖进框的范围里，再点整理。")
+        }
         ui.revision += 1
     }
 
