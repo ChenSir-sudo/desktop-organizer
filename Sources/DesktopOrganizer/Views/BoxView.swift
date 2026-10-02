@@ -230,7 +230,7 @@ struct BoxView: View {
             emptyState
         } else {
             ScrollView(.vertical) {
-                LazyVGrid(columns: columns, spacing: 8) {
+                LazyVGrid(columns: columns, alignment: .center, spacing: 8) {
                     ForEach(model.items) { item in
                         ItemTile(
                             item: item,
@@ -359,14 +359,25 @@ struct ItemTile: View {
                     badge("exclamationmark.triangle.fill", color: .orange)
                 }
             }
-            Text(item.name)
-                .font(.system(size: 10))
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .truncationMode(.middle)
-                .foregroundStyle(item.isBroken ? Color.secondary.opacity(0.6) : (hovering ? Color.primary : Color.secondary))
+            // 用两行占位撑出固定高度，并且让真实名字**顶部对齐**：
+            // 这样不管名字一行还是两行，图标位置和名字起点都完全一致。
+            ZStack(alignment: .top) {
+                Text("占\n位")
+                    .font(.system(size: 10))
+                    .lineLimit(2)
+                    .opacity(0)
+                    .accessibilityHidden(true)
+
+                Text(item.name)
+                    .font(.system(size: 10))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .truncationMode(.middle)
+                    .foregroundStyle(item.isBroken ? Color.secondary.opacity(0.6) : (hovering ? Color.primary : Color.secondary))
+            }
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .top)
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
