@@ -1,69 +1,35 @@
 import AppKit
-import SwiftUI
 
-/// 整理框内部拖拽时携带的数据。
+/// 整理框内部拖拽时携带的数据：**一次可以拖多个条目**。
 ///
-/// 故意**不**用文件 URL 作为载体：那样拖到访达会被当成真实文件复制，产生重复文件。
-/// 用自定义类型，拖到访达/桌面就是「没有接收方」，可以明确定义成「移出整理框」。
+/// 刻意不把载荷声明成导出的 UTI，也不让外部进程可见 —— 否则往访达拖的时候
+/// 系统会把它当文件内容写出来，在桌面生成垃圾文件。
 struct DragPayload: Equatable {
     var boxID: UUID
-    var itemID: UUID
+    var itemIDs: [UUID]
 
     static let typeIdentifier = "com.chenziyang.desktoporganizer.item"
 
-    init(boxID: UUID, itemID: UUID) {
+    init(boxID: UUID, itemIDs: [UUID]) {
         self.boxID = boxID
-        self.itemID = itemID
+        self.itemIDs = itemIDs
     }
 
     init?(string: String) {
-        let parts = string.split(separator: "|")
-        guard parts.count == 2,
-              let boxID = UUID(uuidString: String(parts[0])),
-              let itemID = UUID(uuidString: String(parts[1])) else { return nil }
+        let parts = string.split(separator: "|", maxSplits: 1)
+        guard parts.count == 2, let boxID = UUID(uuidString: String(parts[0])) else { return nil }
+        let ids = parts[1].split(separator: ",").compactMap { UUID(uuidString: String($0)) }
+        guard !ids.isEmpty else { return nil }
         self.boxID = boxID
-        self.itemID = itemID
+        self.itemIDs = ids
     }
 
-    var encoded: String { "\(boxID.uuidString)|\(itemID.uuidString)" }
-
-    static func provider(for payload: DragPayload) -> NSItemProvider {
-        let provider = NSItemProvider()
-        let data = Data(payload.encoded.utf8)
-        // visibility 必须是 .ownProcess：改成 .all 的话访达能看到这份数据，
-        // 就会按「剪贴文件」把载荷原样写到桌面上（就是你看到的那些
-        // 「整理框条目引用 XX」）。整理框内部拖拽不需要跨进程可见。
-        provider.registerDataRepresentation(
-            forTypeIdentifier: typeIdentifier,
-            visibility: .ownProcess
-        ) { completion in
-            completion(data, nil)
-            return nil
-        }
-        return provider
+    var encoded: String {
+        "\(boxID.uuidString)|\(itemIDs.map(\.uuidString).joined(separator: ","))"
     }
 
-    /// 从若干 provider 里把文件 URL 读出来（异步，最后回主线程）。
-    static func loadFileURLs(from providers: [NSItemProvider], completion: @escaping ([URL]) -> Void) {
-        let group = DispatchGroup()
-        let lock = NSLock()
-        var collected: [URL] = []
+    // MARK: 粘贴板（AppKit 层用）
 
-        for provider in providers {
-            group.enter()
-            _ = provider.loadObject(ofClass: NSURL.self) { object, _ in
-                if let url = object as? URL {
-                    lock.lock(); collected.append(url); lock.unlock()
-                }
-                group.leave()
-            }
-        }
-        group.notify(queue: .main) { completion(collected) }
-    }
-
-    /// AppKit 层用的粘贴板类型。
-    /// 刻意不声明成导出的 UTI —— 声明过（conforms to public.data）之后，
-    /// 往桌面拖会被系统当成文件内容写出来，生成叫「整理框条目引用 XX」的垃圾文件。
     static var pasteboardType: NSPasteboard.PasteboardType {
         NSPasteboard.PasteboardType(typeIdentifier)
     }
@@ -74,14 +40,32 @@ struct DragPayload: Equatable {
         return DragPayload(string: string)
     }
 
-    static func payload(from provider: NSItemProvider, completion: @escaping (DragPayload) -> Void) {
-        guard provider.hasItemConformingToTypeIdentifier(typeIdentifier) else { return }
-        provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in
-            guard let data, let string = String(data: data, encoding: .utf8),
-                  let payload = DragPayload(string: string) else { return }
-            DispatchQueue.main.async { completion(payload) }
+    // MARK: 拖拽源（SwiftUI 层用）
+
+    static func provider(for payload: DragPayload) -> NSItemProvider {
+        let provider = NSItemProvider()
+        let data = Data(payload.encoded.utf8)
+        // .ownProcess：只有本进程能读。整理框内部拖拽不需要跨进程可见，
+        // 访达拿不到数据就不会把它当文件内容写到桌面上。
+        provider.registerDataRepresentation(
+            forTypeIdentifier: typeIdentifier,
+            visibility: .ownProcess
+        ) { completion in
+            completion(data, nil)
+            return nil
         }
+        return provider
     }
+}
+
+/// 一个条目格子在本窗口里的位置与身份。
+/// SwiftUI 侧上报给 AppKit 侧，用来把落点换算成「第几个格子」以及
+/// 「是不是文件夹」—— 拖到文件夹图标上要真的能放进去。
+struct TileGeometry: Equatable {
+    var id: UUID
+    var frame: CGRect      // SwiftUI 的 .global：窗口坐标，左上原点
+    var isDirectory: Bool
+    var url: URL
 }
 
 /// 全局拖拽状态。必须共享，因为「从 A 框拖到 B 框」时，
@@ -91,14 +75,15 @@ final class DragSession: ObservableObject {
 
     /// 当前正在被拖动的条目
     @Published var payload: DragPayload?
-    /// 外部文件正悬停在哪个文件夹图标上（用来提示「会放进这个文件夹」）
-    @Published var folderDropTargetID: UUID?
     /// 是否已经被某个整理框接住了（用来区分「拖到别的框」和「拖出去丢掉」）
     @Published var handled = false
+    /// 正悬停在哪个文件夹图标上（内部条目和外部文件都用它做高亮提示）
+    @Published var folderDropTargetID: UUID?
 
     func begin(_ payload: DragPayload) {
         self.payload = payload
         handled = false
+        folderDropTargetID = nil
     }
 
     func finish() {

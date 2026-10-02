@@ -88,15 +88,36 @@ enum Commands {
         BoxWindowManager.shared.refresh(boxID: boxID)
     }
 
-    static func reorder(in boxID: UUID, itemID: UUID, to index: Int) {
-        Store.shared.moveItem(in: boxID, itemID: itemID, to: index)
+    static func reorder(in boxID: UUID, itemIDs: [UUID], to index: Int) {
+        Store.shared.moveItems(in: boxID, itemIDs: itemIDs, to: index)
         BoxWindowManager.shared.refresh(boxID: boxID)
     }
 
-    static func transfer(itemID: UUID, from source: UUID, to target: UUID, at index: Int) {
-        guard Store.shared.transferItem(itemID, from: source, to: target, at: index) else { return }
+    static func transfer(itemIDs: [UUID], from source: UUID, to target: UUID, at index: Int) {
+        guard Store.shared.transferItems(itemIDs, from: source, to: target, at: index) else { return }
         BoxWindowManager.shared.refresh(boxID: source)
         BoxWindowManager.shared.refresh(boxID: target)
+    }
+
+    /// 把框内条目对应的文件移进某个目录（拖到文件夹图标上）。
+    /// 文件离开了整理框的管辖范围，所以先把条目从框里摘掉（顺带恢复原位置显示），再搬。
+    static func moveItemsIntoFolder(_ itemIDs: [UUID], in boxID: UUID, folder: URL) {
+        guard let box = Store.shared.box(id: boxID) else { return }
+        let targets = box.items.filter { itemIDs.contains($0.id) }
+        guard !targets.isEmpty else { return }
+
+        Store.shared.removeItems(Set(targets.map(\.id)), from: boxID)
+        let outcome = FileActions.move(targets.map(\.url), into: folder)
+
+        BoxWindowManager.shared.refresh(boxID: boxID)
+        BoxWindowManager.shared.refreshAll()
+
+        if !outcome.failures.isEmpty {
+            FileActions.info(
+                title: "有 \(outcome.failures.count) 项没能移入「\(folder.lastPathComponent)」",
+                message: outcome.failures.map { "\($0.url.lastPathComponent)：\($0.reason)" }.joined(separator: "\n")
+            )
+        }
     }
 
     static func toggleHidden(_ hidden: Bool, itemID: UUID, in boxID: UUID) {

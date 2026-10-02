@@ -25,8 +25,8 @@ struct BoxActions {
     var removeItem: (UUID) -> Void = { _ in }
     var trashItem: (URL) -> Void = { _ in }
     var toggleItemHidden: (UUID, Bool) -> Void = { _, _ in }
-    /// 上报各条目格子的位置和顺序，供 AppKit 层把落点换算成插入下标
-    var updateTileFrames: ([UUID: CGRect], [UUID]) -> Void = { _, _ in }
+    /// 上报各条目格子的几何与顺序，供 AppKit 层把落点换算成插入下标 / 判断文件夹
+    var updateTileFrames: ([UUID: TileGeometry], [UUID]) -> Void = { _, _ in }
     var clearItems: () -> Void = {}
 }
 
@@ -234,12 +234,15 @@ struct BoxView: View {
                     ForEach(model.items) { item in
                         ItemTile(
                             item: item,
-                            isBeingDragged: session.payload?.itemID == item.id,
+                            isSelected: ui.selectedItemIDs.contains(item.id),
+                            isBeingDragged: session.payload?.itemIDs.contains(item.id) ?? false,
                             isFolderDropTarget: session.folderDropTargetID == item.id,
-                            actions: actions
+                            actions: actions,
+                            onSelect: { handleSelection(of: item) }
                         )
                         .onDrag {
-                            let payload = DragPayload(boxID: boxID, itemID: item.id)
+                            let ids = dragSelection(for: item)
+                            let payload = DragPayload(boxID: boxID, itemIDs: ids)
                             session.begin(payload)
                             return DragPayload.provider(for: payload)
                         } preview: {
@@ -248,8 +251,13 @@ struct BoxView: View {
                         .background(
                             GeometryReader { geo in
                                 Color.clear.preference(
-                                    key: TileFramePreference.self,
-                                    value: [item.id: geo.frame(in: .global)]
+                                    key: TileGeometryPreference.self,
+                                    value: [item.id: TileGeometry(
+                                        id: item.id,
+                                        frame: geo.frame(in: .global),
+                                        isDirectory: item.isDirectory,
+                                        url: item.url
+                                    )]
                                 )
                             }
                         )
@@ -259,15 +267,60 @@ struct BoxView: View {
                 .padding(.vertical, 10)
                 .padding(.bottom, 4)
                 .animation(Motion.items, value: model.items)
+                .onPreferenceChange(TileGeometryPreference.self) { geometries in
+                    actions.updateTileFrames(geometries, model.items.map(\.id))
+                }
+                // 点空白处清空选择
+                .background(
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { ui.selectedItemIDs.removeAll() }
+                )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
+    /// 点选 / ⌘点选 / ⇧范围选。修饰键直接读当前状态，SwiftUI 的 tap 手势拿不到。
+    private func handleSelection(of item: ResolvedItem) {
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.command) {
+            if ui.selectedItemIDs.contains(item.id) {
+                ui.selectedItemIDs.remove(item.id)
+            } else {
+                ui.selectedItemIDs.insert(item.id)
+                ui.selectionAnchor = item.id
+            }
+        } else if flags.contains(.shift),
+                  let anchor = ui.selectionAnchor,
+                  let anchorIndex = model.items.firstIndex(where: { $0.id == anchor }),
+                  let targetIndex = model.items.firstIndex(where: { $0.id == item.id }) {
+            let range = anchorIndex <= targetIndex ? anchorIndex...targetIndex : targetIndex...anchorIndex
+            ui.selectedItemIDs = Set(model.items[range].map(\.id))
+        } else {
+            ui.selectedItemIDs = [item.id]
+            ui.selectionAnchor = item.id
+        }
+    }
+
+    /// 拖某个条目时要带上哪些：如果它已经被选中，就带上整批；否则只有它自己。
+    private func dragSelection(for item: ResolvedItem) -> [UUID] {
+        if ui.selectedItemIDs.contains(item.id), ui.selectedItemIDs.count > 1 {
+            return model.items.map(\.id).filter { ui.selectedItemIDs.contains($0) }
+        }
+        ui.selectedItemIDs = [item.id]
+        ui.selectionAnchor = item.id
+        return [item.id]
+    }
+
     private func dragPreview(for item: ResolvedItem) -> some View {
         HStack(spacing: 6) {
             Image(nsImage: item.icon).resizable().frame(width: 20, height: 20)
-            Text(item.name).font(.system(size: 11)).lineLimit(1)
+            if session.payload.map({ $0.itemIDs.count > 1 }) ?? false {
+                Text("\(session.payload?.itemIDs.count ?? 1) 项").font(.system(size: 11, weight: .medium))
+            } else {
+                Text(item.name).font(.system(size: 11)).lineLimit(1)
+            }
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 5)
@@ -338,9 +391,11 @@ struct BoxView: View {
 
 struct ItemTile: View {
     let item: ResolvedItem
+    let isSelected: Bool
     let isBeingDragged: Bool
     let isFolderDropTarget: Bool
     let actions: BoxActions
+    let onSelect: () -> Void
 
     @State private var hovering = false
 
@@ -368,20 +423,27 @@ struct ItemTile: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.accentColor.opacity(isFolderDropTarget ? 0.28 : (hovering ? 0.10 : 0)))
+                .fill(Color.accentColor.opacity(
+                    isFolderDropTarget ? 0.28 : (isSelected ? 0.20 : (hovering ? 0.10 : 0))
+                ))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.accentColor.opacity(isFolderDropTarget ? 0.9 : 0), lineWidth: 2)
+                .strokeBorder(
+                    Color.accentColor.opacity(isFolderDropTarget ? 0.9 : (isSelected ? 0.75 : 0)),
+                    lineWidth: isSelected || isFolderDropTarget ? 2 : 0
+                )
         )
         .scaleEffect(isFolderDropTarget ? 1.08 : 1)
         .animation(Motion.folderDrop, value: isFolderDropTarget)
+        .animation(Motion.hover, value: isSelected)
         .opacity(isBeingDragged ? 0.35 : 1)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture(count: 2) {
             if item.exists { actions.openItem(item.url) }
         }
+        .onTapGesture(count: 1) { onSelect() }
         .contextMenu { menu }
         .help(item.isBroken ? "\(item.name)\n（文件已不在原位置）" : item.url.path)
     }
@@ -424,10 +486,10 @@ struct ItemTile: View {
 }
 
 
-/// 收集各条目格子在窗口里的位置（SwiftUI 的 .global 是左上原点）。
-struct TileFramePreference: PreferenceKey {
-    static var defaultValue: [UUID: CGRect] = [:]
-    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+/// 收集各条目格子的几何（SwiftUI 的 .global 是窗口坐标、左上原点）。
+struct TileGeometryPreference: PreferenceKey {
+    static var defaultValue: [UUID: TileGeometry] = [:]
+    static func reduce(value: inout [UUID: TileGeometry], nextValue: () -> [UUID: TileGeometry]) {
         value.merge(nextValue()) { _, new in new }
     }
 }

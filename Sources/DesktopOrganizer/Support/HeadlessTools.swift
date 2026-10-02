@@ -254,16 +254,22 @@ enum HeadlessTools {
         print("== 重排 / 跨框转移 ==")
         let orderBefore = Store.shared.box(id: box.id)?.items.map(\.name) ?? []
         if let firstID = Store.shared.box(id: box.id)?.items.first?.id {
-            Store.shared.moveItem(in: box.id, itemID: firstID, to: 2)
+            Store.shared.moveItems(in: box.id, itemIDs: [firstID], to: 2)
         }
         let orderAfter = Store.shared.box(id: box.id)?.items.map(\.name) ?? []
 
         check("重排把首项挪到了第 3 位", orderAfter.count == orderBefore.count && orderAfter[2] == orderBefore[0])
         check("重排没有丢条目", Set(orderAfter) == Set(orderBefore))
 
+        // 多选批量重排：一次挪动两项
+        let batchIDs = Array((Store.shared.box(id: box.id)?.items ?? []).prefix(2).map(\.id))
+        Store.shared.moveItems(in: box.id, itemIDs: batchIDs, to: 0)
+        let batchAfter = Store.shared.box(id: box.id)?.items.prefix(2).map(\.id) ?? []
+        check("批量重排把两项一起挪到了最前", Array(batchAfter) == batchIDs.map { $0 })
+
         let targetBox = Store.shared.addBox(name: "__selftest_target__")
         if let moveID = Store.shared.box(id: box.id)?.items.first?.id {
-            let moved = Store.shared.transferItem(moveID, from: box.id, to: targetBox.id, at: 0)
+            let moved = Store.shared.transferItems([moveID], from: box.id, to: targetBox.id, at: 0)
             let inTarget = Store.shared.box(id: targetBox.id)?.items.count ?? 0
             check("跨框转移成功", moved && inTarget == 1)
             // 转移过去之后原位置仍然应该是隐藏的（didHide 跟着条目走）

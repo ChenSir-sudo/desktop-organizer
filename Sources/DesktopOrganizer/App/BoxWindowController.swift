@@ -76,21 +76,43 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         dropContainer.addSubview(hostView)
         panel.contentView = dropContainer
 
-        dropContainer.onFileDrop = { [weak self] urls, _ in
-            self?.handleDrop(urls)
+        // 外部文件：落在文件夹图标上就移进那个文件夹，否则加入整理框
+        dropContainer.onFileDrop = { [weak self] urls, _, folder in
+            guard let self else { return }
+            if let folder {
+                let outcome = FileActions.move(urls, into: folder)
+                BoxWindowManager.shared.refreshAll()
+                if !outcome.failures.isEmpty {
+                    FileActions.info(
+                        title: "有 \(outcome.failures.count) 项没能移入「\(folder.lastPathComponent)」",
+                        message: outcome.failures.map { "\($0.url.lastPathComponent)：\($0.reason)" }.joined(separator: "\n")
+                    )
+                }
+            } else {
+                self.handleDrop(urls)
+            }
         }
-        dropContainer.onItemDrop = { [weak self] payload, index in
+
+        // 内部条目：放进文件夹 / 重排 / 跨框转移
+        dropContainer.onItemDrop = { [weak self] payload, index, folder in
             guard let self else { return }
             DragSession.shared.handled = true
-            if payload.boxID == self.boxID {
-                Commands.reorder(in: self.boxID, itemID: payload.itemID, to: index)
+            defer { DragSession.shared.finish() }
+
+            if let folder {
+                Commands.moveItemsIntoFolder(payload.itemIDs, in: payload.boxID, folder: folder)
+            } else if payload.boxID == self.boxID {
+                Commands.reorder(in: self.boxID, itemIDs: payload.itemIDs, to: index)
             } else {
-                Commands.transfer(itemID: payload.itemID, from: payload.boxID, to: self.boxID, at: index)
+                Commands.transfer(itemIDs: payload.itemIDs, from: payload.boxID, to: self.boxID, at: index)
             }
-            DragSession.shared.finish()
         }
+
         dropContainer.onTargetingChanged = { [weak self] targeting in
             self?.ui.isDropTargeted = targeting
+        }
+        dropContainer.onFolderTargetChanged = { id in
+            DragSession.shared.folderDropTargetID = id
         }
     }
 
@@ -122,9 +144,15 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
             toggleItemHidden: { id, hidden in
                 Commands.toggleHidden(hidden, itemID: id, in: self.boxID)
             },
-            updateTileFrames: { [weak self] frames, order in
-                self?.dropContainer.tileFrames = frames
-                self?.dropContainer.orderedItemIDs = order
+            updateTileFrames: { [weak self] tiles, order in
+                guard let self else { return }
+                let changed = self.dropContainer.tiles.count != tiles.count
+                self.dropContainer.tiles = tiles
+                self.dropContainer.orderedItemIDs = order
+                if changed {
+                    let folders = tiles.values.filter(\.isDirectory).count
+                    self.dropContainer.note("几何上报 \(tiles.count) 个格子（其中文件夹 \(folders) 个）")
+                }
             },
             clearItems: { [weak self] in self?.confirmClear() }
         )

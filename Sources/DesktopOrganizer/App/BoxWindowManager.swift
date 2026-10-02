@@ -42,7 +42,7 @@ final class BoxWindowManager {
                 defer { session.finish() }
                 guard !session.handled else { return }
                 guard !self.containsScreenPoint(NSEvent.mouseLocation) else { return }
-                Store.shared.removeItems([payload.itemID], from: payload.boxID)
+                Store.shared.removeItems(Set(payload.itemIDs), from: payload.boxID)
                 self.refreshAll()
                 self.removeFinderClippingFiles(matching: payload)
             }

@@ -11,16 +11,17 @@ import AppKit
 /// 这里只注册 `public.file-url`，外部文件走 AppKit，内部拖动走 SwiftUI。
 final class BoxContentView: NSView {
 
-    /// 外部文件落到窗口里。参数是文件列表和落点（本视图坐标系）。
-    var onFileDrop: (([URL], NSPoint) -> Void)?
-    /// 整理框内部的条目落到窗口里。参数是载荷和目标位置。
-    var onItemDrop: ((DragPayload, Int) -> Void)?
+    /// 外部文件落到窗口里。第三个参数是落点所在的文件夹图标（不是文件夹则为 nil）。
+    var onFileDrop: (([URL], NSPoint, URL?) -> Void)?
+    /// 整理框内部的条目落到窗口里。参数是载荷、目标位置、以及落点所在的文件夹。
+    var onItemDrop: ((DragPayload, Int, URL?) -> Void)?
     /// 拖拽进入/离开，用来驱动高亮。
     var onTargetingChanged: ((Bool) -> Void)?
+    /// 当前悬停在哪个文件夹图标上（nil 表示没有）。
+    var onFolderTargetChanged: ((UUID?) -> Void)?
 
-    /// 各条目格子在本视图坐标系里的位置（由 SwiftUI 侧上报），
-    /// 用来判断内部条目落到了第几个位置。
-    var tileFrames: [UUID: CGRect] = [:]
+    /// 各条目格子的几何（由 SwiftUI 侧上报）。
+    var tiles: [UUID: TileGeometry] = [:]
     /// 当前显示顺序，用来把落点换算成插入下标。
     var orderedItemIDs: [UUID] = []
 
@@ -51,11 +52,15 @@ final class BoxContentView: NSView {
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        acceptedOperation(sender)
+        let op = acceptedOperation(sender)
+        let point = convert(sender.draggingLocation, from: nil)
+        onFolderTargetChanged?(folderTile(at: point)?.id)
+        return op
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
         onTargetingChanged?(false)
+        onFolderTargetChanged?(nil)
     }
 
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
@@ -64,34 +69,46 @@ final class BoxContentView: NSView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         onTargetingChanged?(false)
+        onFolderTargetChanged?(nil)
         let point = convert(sender.draggingLocation, from: nil)
         let pasteboard = sender.draggingPasteboard
+        let folder = folderTile(at: point)?.url
 
-        // 内部条目：重排 / 跨框转移
+        // 内部条目：放进文件夹 / 重排 / 跨框转移
         if let payload = DragPayload.read(from: pasteboard) {
             let index = insertionIndex(at: point)
-            log("performDragOperation 内部条目 落点=\(NSStringFromPoint(point)) 目标下标=\(index)")
-            onItemDrop?(payload, index)
+            log("performDragOperation 内部条目 \(payload.itemIDs.count) 项 落点=\(NSStringFromPoint(point)) 下标=\(index) 目标文件夹=\(folder?.lastPathComponent ?? "无")")
+            onItemDrop?(payload, index, folder)
             return true
         }
 
         // 外部文件
         let urls = fileURLs(from: pasteboard)
-        log("performDragOperation 外部文件 落点=\(NSStringFromPoint(point)) 数量=\(urls.count) -> \(urls.map(\.lastPathComponent))")
+        log("performDragOperation 外部文件 \(urls.count) 个 落点=\(NSStringFromPoint(point)) 目标文件夹=\(folder?.lastPathComponent ?? "无") -> \(urls.map(\.lastPathComponent))")
         guard !urls.isEmpty else { return false }
-        onFileDrop?(urls, point)
+        onFileDrop?(urls, point, folder)
         return true
     }
 
-    /// 把窗口坐标的落点换算成插入下标。SwiftUI 的 .global 是左上原点，本视图是左下原点。
-    private func insertionIndex(at point: NSPoint) -> Int {
+    /// 落点落在哪个格子上。
+    private func tile(at point: NSPoint) -> TileGeometry? {
         let flipped = NSPoint(x: point.x, y: bounds.height - point.y)
-        for (index, id) in orderedItemIDs.enumerated() {
-            if let frame = tileFrames[id], frame.contains(flipped) {
-                return index
-            }
+        for id in orderedItemIDs {
+            if let tile = tiles[id], tile.frame.contains(flipped) { return tile }
         }
-        return orderedItemIDs.count
+        return nil
+    }
+
+    /// 落点是否落在某个文件夹图标上。
+    private func folderTile(at point: NSPoint) -> TileGeometry? {
+        guard let tile = tile(at: point), tile.isDirectory else { return nil }
+        return tile
+    }
+
+    /// 把落点换算成插入下标。SwiftUI 的 .global 是左上原点，本视图是左下原点。
+    private func insertionIndex(at point: NSPoint) -> Int {
+        guard let hit = tile(at: point) else { return orderedItemIDs.count }
+        return orderedItemIDs.firstIndex(of: hit.id) ?? orderedItemIDs.count
     }
 
     override func concludeDragOperation(_ sender: NSDraggingInfo?) {
@@ -117,6 +134,9 @@ final class BoxContentView: NSView {
     }
 
     // MARK: 日志
+
+    /// 供外部记一笔（例如几何上报），便于排查。
+    func note(_ message: String) { log(message) }
 
     /// 拖拽出问题时靠它定位：记录窗口究竟收到了什么。文件很小，保留最近 200 行。
     private func log(_ message: String) {

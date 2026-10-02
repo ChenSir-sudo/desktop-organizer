@@ -471,27 +471,32 @@ final class Store: ObservableObject {
 
     // MARK: 拖拽
 
-    /// 框内重排。
-    func moveItem(in boxID: UUID, itemID: UUID, to targetIndex: Int) {
-        guard let boxIndex = index(of: boxID),
-              let from = boxes[boxIndex].items.firstIndex(where: { $0.id == itemID }) else { return }
-        let to = max(0, min(targetIndex, boxes[boxIndex].items.count - 1))
-        guard from != to else { return }
-        let item = boxes[boxIndex].items.remove(at: from)
-        boxes[boxIndex].items.insert(item, at: to)
+    /// 框内重排（支持多选一次挪动）。
+    func moveItems(in boxID: UUID, itemIDs: [UUID], to targetIndex: Int) {
+        guard let boxIndex = index(of: boxID) else { return }
+        let movingIDs = Set(itemIDs)
+        let moving = boxes[boxIndex].items.filter { movingIDs.contains($0.id) }
+        guard !moving.isEmpty else { return }
+
+        boxes[boxIndex].items.removeAll { movingIDs.contains($0.id) }
+        let to = max(0, min(targetIndex, boxes[boxIndex].items.count))
+        boxes[boxIndex].items.insert(contentsOf: moving, at: to)
         scheduleSave()
     }
 
     /// 把条目从一个整理框拖到另一个整理框。didHide 状态跟着走，不重复动文件。
     @discardableResult
-    func transferItem(_ itemID: UUID, from sourceBox: UUID, to targetBox: UUID, at targetIndex: Int) -> Bool {
+    func transferItems(_ itemIDs: [UUID], from sourceBox: UUID, to targetBox: UUID, at targetIndex: Int) -> Bool {
         guard sourceBox != targetBox,
               let sourceIndex = index(of: sourceBox),
-              let targetBoxIndex = index(of: targetBox),
-              let from = boxes[sourceIndex].items.firstIndex(where: { $0.id == itemID }) else { return false }
-        let item = boxes[sourceIndex].items.remove(at: from)
+              let targetBoxIndex = index(of: targetBox) else { return false }
+        let movingIDs = Set(itemIDs)
+        let moving = boxes[sourceIndex].items.filter { movingIDs.contains($0.id) }
+        guard !moving.isEmpty else { return false }
+
+        boxes[sourceIndex].items.removeAll { movingIDs.contains($0.id) }
         let to = max(0, min(targetIndex, boxes[targetBoxIndex].items.count))
-        boxes[targetBoxIndex].items.insert(item, at: to)
+        boxes[targetBoxIndex].items.insert(contentsOf: moving, at: to)
         scheduleSave()
         return true
     }

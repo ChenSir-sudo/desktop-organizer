@@ -13,5 +13,8 @@ final class BoxUIState: ObservableObject {
     @Published var actionAreaHovered = false
     @Published var isDragging = false
     @Published var isDropTargeted = false
-    @Published var highlightedItemIDs: Set<UUID> = []
+    /// 当前选中的条目。支持点选 / ⌘点选 / ⇧范围选。
+    @Published var selectedItemIDs: Set<UUID> = []
+    /// 范围选择的锚点
+    @Published var selectionAnchor: UUID?
 }
