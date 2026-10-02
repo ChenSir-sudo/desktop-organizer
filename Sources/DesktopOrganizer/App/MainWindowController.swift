@@ -57,59 +57,23 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     // MARK: 动作
 
     private func createBox() {
-        let box = Store.shared.addBox()
-        BoxWindowManager.shared.sync(Store.shared.boxes)
-        BoxWindowManager.shared.focus(id: box.id)
+        Commands.createBox()
         ui.revision += 1
     }
 
     private func deleteBox(_ id: UUID) {
-        guard let box = Store.shared.box(id: id) else { return }
-        let count = box.items.count
-        let message = count == 0
-            ? "框里没有条目。"
-            : "框内 \(count) 个文件会恢复显示。"
-        guard FileActions.confirm(
-            title: "删除整理框「\(box.name)」？",
-            message: message,
-            confirmTitle: "删除整理框"
-        ) else { return }
-        Store.shared.removeBox(id: id)
+        guard Commands.confirmAndDeleteBox(id) else { return }
         ui.revision += 1
     }
 
     private func toggleHidden(_ id: UUID) {
-        let hidden = BoxWindowManager.shared.isHidden(id: id)
-        BoxWindowManager.shared.setHidden(!hidden, id: id)
+        BoxWindowManager.shared.setHidden(!BoxWindowManager.shared.isHidden(id: id), id: id)
         ui.revision += 1
     }
 
     private func categorize() {
-        let groups = DeskCategorizer.scanDesktop()
-        let total = groups.values.reduce(0) { $0 + $1.count }
-
-        guard total > 0 else {
-            FileActions.info(title: "桌面很干净", message: "没有找到需要归类的东西。")
-            return
-        }
-
-        if Store.shared.prefs.confirmBeforeCategorize {
-            let detail = FileCategory.allCases.compactMap { category -> String? in
-                guard let urls = groups[category], !urls.isEmpty else { return nil }
-                return "\(category.rawValue)  \(urls.count) 项"
-            }.joined(separator: "\n")
-            guard FileActions.confirm(
-                title: "把桌面上的 \(total) 项按类型收进整理框？",
-                message: detail + "\n\n文件不会被移动，只是被整理框引用。",
-                confirmTitle: "开始归类"
-            ) else { return }
-        }
-
-        let outcome = DeskCategorizer.categorizeIntoBoxes()
-        BoxWindowManager.shared.sync(Store.shared.boxes)
-        BoxWindowManager.shared.showAll()
+        Commands.categorizeDesktop()
         ui.revision += 1
-        FileActions.info(title: "归类完成", message: outcome.summary)
     }
 
     // MARK: NSWindowDelegate

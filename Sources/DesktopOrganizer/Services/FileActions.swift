@@ -26,16 +26,42 @@ enum FileActions {
         }
     }
 
-    /// 用已安装的代码编辑器打开。找不到就退回系统默认方式。
+    /// 已安装的代码编辑器。
+    ///
+    /// 先按 bundle identifier 找，这样装在 ~/Applications 或别处的也能认出来；
+    /// 找不到再退回 /Applications 下的固定路径。
+    static func detectedEditors() -> [(name: String, url: URL)] {
+        let candidates: [(name: String, bundleID: String)] = [
+            ("Visual Studio Code", "com.microsoft.VSCode"),
+            ("Cursor", "com.todesktop.230313mzl4w4u92"),
+            ("Windsurf", "com.exafunction.windsurf"),
+            ("Zed", "dev.zed.Zed"),
+            ("Sublime Text", "com.sublimetext.4"),
+        ]
+        var found: [(String, URL)] = []
+        for candidate in candidates {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: candidate.bundleID) {
+                found.append((candidate.name, url))
+                continue
+            }
+            let direct = URL(fileURLWithPath: "/Applications/\(candidate.name).app")
+            if FileManager.default.fileExists(atPath: direct.path) {
+                found.append((candidate.name, direct))
+            }
+        }
+        return found
+    }
+
+    /// 菜单上显示的编辑器名字。没有装任何编辑器时返回 nil。
+    static var preferredEditorName: String? { detectedEditors().first?.name }
+
+    /// 用已安装的代码编辑器打开。一个都没有就退回系统默认方式。
     static func openInCodeEditor(_ url: URL) {
-        let candidates = ["Visual Studio Code", "Cursor", "Windsurf", "Zed", "Sublime Text"]
-        for name in candidates {
-            let appURL = URL(fileURLWithPath: "/Applications/\(name).app")
-            guard FileManager.default.fileExists(atPath: appURL.path) else { continue }
-            NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
+        guard let editor = detectedEditors().first else {
+            NSWorkspace.shared.open(url)
             return
         }
-        NSWorkspace.shared.open(url)
+        NSWorkspace.shared.open([url], withApplicationAt: editor.url, configuration: NSWorkspace.OpenConfiguration())
     }
 
     /// 在终端里打开所在目录（优先 iTerm，其次系统终端）。

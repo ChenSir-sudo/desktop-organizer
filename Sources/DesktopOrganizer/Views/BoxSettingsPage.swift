@@ -45,7 +45,7 @@ struct BoxSettingsPage: View {
     private var header: some View {
         HStack(spacing: 8) {
             Button {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+                withAnimation(Motion.page) {
                     ui.page = .content
                 }
             } label: {

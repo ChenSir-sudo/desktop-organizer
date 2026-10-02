@@ -309,6 +309,53 @@ enum HeadlessTools {
         let protectedMove = FileActions.move([Bundle.main.bundleURL], into: inbox)
         check("拒绝搬移程序自身", protectedMove.moved.isEmpty)
 
+        // 回归：同一个文件被多个整理框引用时，最后一个框移除才该恢复显示
+        print("")
+        print("== 多框引用同一个文件 ==")
+        let shared = staging.appendingPathComponent("共享文件.txt")
+        try? "z".write(to: shared, atomically: true, encoding: .utf8)
+        let boxA = Store.shared.addBox(name: "__ref_A__")
+        let boxB = Store.shared.addBox(name: "__ref_B__")
+        Store.shared.addItems([shared], to: boxA.id)
+        Store.shared.addItems([shared], to: boxB.id)
+        check("两个框都引用了它", Store.shared.box(id: boxA.id)?.items.count == 1
+              && Store.shared.box(id: boxB.id)?.items.count == 1)
+        check("加入后是隐藏的", HiddenFlag.isHidden(shared))
+
+        if let idA = Store.shared.box(id: boxA.id)?.items.first?.id {
+            Store.shared.removeItems([idA], from: boxA.id)
+        }
+        check("从 A 移除后仍保持隐藏（B 还引用着）", HiddenFlag.isHidden(shared))
+
+        if let idB = Store.shared.box(id: boxB.id)?.items.first?.id {
+            Store.shared.removeItems([idB], from: boxB.id)
+        }
+        check("从 B 移除后恢复显示", !HiddenFlag.isHidden(shared))
+
+        Store.shared.removeBox(id: boxA.id)
+        Store.shared.removeBox(id: boxB.id)
+        try? fm.removeItem(at: shared)
+
+        // 回归：给配置结构加字段时，旧配置必须还能解码。
+        // Swift 合成的 init(from:) 对非可选属性一律要求键存在（即使有默认值），
+        // 一旦漏掉这个，旧配置整份解码失败 → load() 的 try? 静默吞掉 → save() 写回空配置。
+        print("")
+        print("== 配置宽容解码 ==")
+        let empty = Data("{}".utf8)
+        check("BoxConfig 能从空对象解码", (try? JSONDecoder().decode(BoxConfig.self, from: empty)) != nil)
+        check("Preferences 能从空对象解码", (try? JSONDecoder().decode(Preferences.self, from: empty)) != nil)
+        check("BoxItem 能从只有 path 的对象解码",
+              (try? JSONDecoder().decode(BoxItem.self, from: Data(#"{"path":"/tmp/x"}"#.utf8))) != nil)
+
+        // 只有一个未知字段的旧对象也必须能读
+        let legacy = Data(#"{"name":"旧框","folderPath":"/tmp/legacy"}"#.utf8)
+        if let decoded = try? JSONDecoder().decode(BoxConfig.self, from: legacy) {
+            check("1.0 的 folderPath 被读成 legacyFolderPath", decoded.legacyFolderPath == "/tmp/legacy")
+            check("缺 items 时默认为空", decoded.items.isEmpty)
+        } else {
+            check("1.0 格式的 BoxConfig 能解码", false)
+        }
+
         print("")
         print(failures == 0 ? "自检结束：全部通过 ✓" : "自检结束：有 \(failures) 项失败 ✗")
     }

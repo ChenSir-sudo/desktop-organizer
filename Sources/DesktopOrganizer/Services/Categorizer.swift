@@ -44,10 +44,7 @@ enum DeskCategorizer {
 
     static func category(for url: URL) -> FileCategory {
         let ext = url.pathExtension.lowercased()
-        var isDirectory: ObjCBool = false
-        FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-
-        if isDirectory.boolValue {
+        if url.isDirectory {
             return ext == "app" ? .application : .folder
         }
         if ext.isEmpty { return .other }

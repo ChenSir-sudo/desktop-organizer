@@ -125,7 +125,8 @@ private final class GuideContentView: NSView {
         let baseX = window.frame.minX
         let baseY = window.frame.minY
 
-        let color = NSColor.controlAccentColor.withAlphaComponent(0.85)
+        // 需求原话是「浅浅的引导线」，别做成刺眼的实线
+        let color = NSColor.controlAccentColor.withAlphaComponent(0.42)
         color.setStroke()
 
         let path = NSBezierPath()
@@ -145,9 +146,9 @@ private final class GuideContentView: NSView {
         path.stroke()
 
         // 吸附时在线端点一个小方块，让反馈更明确
-        color.withAlphaComponent(0.9).setFill()
+        color.withAlphaComponent(0.6).setFill()
         for guide in guides {
-            let size: CGFloat = 5
+            let size: CGFloat = 4
             switch guide.axis {
             case .vertical:
                 let x = round(guide.position - baseX) + 0.5 - size / 2

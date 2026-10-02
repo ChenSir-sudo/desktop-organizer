@@ -41,7 +41,7 @@ struct MainView: View {
                         ))
                 }
             }
-            .animation(.spring(response: 0.34, dampingFraction: 0.86), value: ui.page)
+            .animation(Motion.page, value: ui.page)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 620, minHeight: 460)
@@ -91,7 +91,7 @@ struct MainView: View {
 
     private func segment(_ title: String, page: MainPage) -> some View {
         Button {
-            withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) { ui.page = page }
+            withAnimation(Motion.page) { ui.page = page }
         } label: {
             Text(title)
                 .font(.system(size: 12, weight: .medium))
@@ -162,9 +162,7 @@ private struct BoxCard: View {
     let onDelete: () -> Void
     let onToggleHidden: () -> Void
 
-    private var brokenCount: Int {
-        box.items.filter { !$0.exists }.count
-    }
+    private var brokenCount: Int { box.missingItemCount }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -177,11 +175,6 @@ private struct BoxCard: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 4)
-                if hidden {
-                    Image(systemName: "eye.slash")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                }
             }
 
             HStack(spacing: 6) {

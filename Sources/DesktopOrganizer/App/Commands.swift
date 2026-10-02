@@ -1,0 +1,106 @@
+import AppKit
+
+/// 界面层调用的高层命令。
+///
+/// 收在这一层有两个原因：
+/// 1. 同一个动作（删除整理框、按类型归类桌面）原本在整理框面板和主窗口各写了一遍；
+/// 2. 条目改动之后「要刷新哪些 model」的口径原本散在各个视图里，
+///    改一次刷新策略得同时改五处。现在视图只调这里的一个方法。
+enum Commands {
+
+    // MARK: 整理框
+
+    @discardableResult
+    static func createBox() -> BoxConfig {
+        let box = Store.shared.addBox()
+        BoxWindowManager.shared.sync(Store.shared.boxes)
+        BoxWindowManager.shared.focus(id: box.id)
+        return box
+    }
+
+    /// 删除整理框（先确认）。框内文件会恢复原位置显示。
+    @discardableResult
+    static func confirmAndDeleteBox(_ id: UUID) -> Bool {
+        guard let box = Store.shared.box(id: id) else { return false }
+        let count = box.items.count
+        let message = count == 0 ? "框里没有条目。" : "框内 \(count) 个文件会恢复显示。"
+        guard FileActions.confirm(
+            title: "删除整理框「\(box.name)」？",
+            message: message,
+            confirmTitle: "删除整理框"
+        ) else { return false }
+
+        Store.shared.removeBox(id: id)
+        return true
+    }
+
+    static func confirmAndClearBox(_ id: UUID) {
+        guard let box = Store.shared.box(id: id), !box.items.isEmpty else { return }
+        guard FileActions.confirm(
+            title: "清空「\(box.name)」里的 \(box.items.count) 个条目？",
+            message: "移除后这些文件会恢复显示。",
+            confirmTitle: "清空"
+        ) else { return }
+        Store.shared.removeAllItems(from: id)
+        BoxWindowManager.shared.refresh(boxID: id)
+    }
+
+    // MARK: 桌面归类
+
+    static func categorizeDesktop() {
+        let store = Store.shared
+        let groups = DeskCategorizer.scanDesktop()
+        let total = groups.values.reduce(0) { $0 + $1.count }
+
+        guard total > 0 else {
+            FileActions.info(title: "桌面很干净", message: "没有找到需要归类的东西。")
+            return
+        }
+
+        if store.prefs.confirmBeforeCategorize {
+            let detail = FileCategory.allCases.compactMap { category -> String? in
+                guard let urls = groups[category], !urls.isEmpty else { return nil }
+                return "\(category.rawValue)  \(urls.count) 项"
+            }.joined(separator: "\n")
+            guard FileActions.confirm(
+                title: "把桌面上的 \(total) 项按类型收进整理框？",
+                message: detail + "\n\n文件不会被移动，只是被整理框引用。",
+                confirmTitle: "开始归类"
+            ) else { return }
+        }
+
+        let outcome = DeskCategorizer.categorizeIntoBoxes()
+        BoxWindowManager.shared.sync(store.boxes)
+        BoxWindowManager.shared.showAll()
+        FileActions.info(title: "归类完成", message: outcome.summary)
+    }
+
+    // MARK: 条目改动
+
+    static func add(_ urls: [URL], to boxID: UUID, at position: Int? = nil) {
+        guard Store.shared.addItems(urls, to: boxID, at: position) > 0 else { return }
+        BoxWindowManager.shared.refresh(boxID: boxID)
+    }
+
+    static func remove(_ ids: Set<UUID>, from boxID: UUID) {
+        guard !ids.isEmpty else { return }
+        Store.shared.removeItems(ids, from: boxID)
+        BoxWindowManager.shared.refresh(boxID: boxID)
+    }
+
+    static func reorder(in boxID: UUID, itemID: UUID, to index: Int) {
+        Store.shared.moveItem(in: boxID, itemID: itemID, to: index)
+        BoxWindowManager.shared.refresh(boxID: boxID)
+    }
+
+    static func transfer(itemID: UUID, from source: UUID, to target: UUID, at index: Int) {
+        guard Store.shared.transferItem(itemID, from: source, to: target, at: index) else { return }
+        BoxWindowManager.shared.refresh(boxID: source)
+        BoxWindowManager.shared.refresh(boxID: target)
+    }
+
+    static func toggleHidden(_ hidden: Bool, itemID: UUID, in boxID: UUID) {
+        Store.shared.setItemHidden(hidden, itemID: itemID, in: boxID)
+        BoxWindowManager.shared.refresh(boxID: boxID)
+    }
+}

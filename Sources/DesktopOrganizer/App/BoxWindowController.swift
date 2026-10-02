@@ -85,13 +85,12 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
             revealItem: { [weak self] url in self?.revealKeepingVisibility(url) },
             copyItemPath: { FileActions.copyPath($0) },
             openInEditor: { FileActions.openInCodeEditor($0) },
+            editorName: FileActions.preferredEditorName ?? "",
             openInTerminal: { FileActions.openInTerminal($0) },
-            removeItem: { [weak self] id in self?.itemsModel.remove([id]) },
+            removeItem: { Commands.remove([$0], from: self.boxID) },
             trashItem: { [weak self] url in self?.confirmTrash(url) },
-            toggleItemHidden: { [weak self] id, hidden in
-                guard let self else { return }
-                Store.shared.setItemHidden(hidden, itemID: id, in: self.boxID)
-                self.itemsModel.refresh(force: true)
+            toggleItemHidden: { id, hidden in
+                Commands.toggleHidden(hidden, itemID: id, in: self.boxID)
             },
             clearItems: { [weak self] in self?.confirmClear() }
         )
@@ -256,7 +255,7 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
 
     private func handleDrop(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        withAnimation { _ = itemsModel.add(urls) }
+        withAnimation { Commands.add(urls, to: boxID) }
     }
 
     private func presentAddPanel() {
@@ -269,29 +268,24 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
     }
 
     private func createSiblingBox() {
-        let newBox = Store.shared.addBox()
-        BoxWindowManager.shared.sync(Store.shared.boxes)
-        BoxWindowManager.shared.focus(id: newBox.id)
+        Commands.createBox()
     }
 
-    /// 隐藏的文件在访达里是选不中的，所以先临时恢复显示再定位。
+    /// 隐藏的文件在访达里是选不中的，所以先恢复显示再定位。
+    ///
+    /// 注意这是**真的把它变成可见**，并且同步更新记录 —— 早先只取消隐藏标志、
+    /// 不同步记录，配置里还写着「我隐藏过它」，状态就对不上了。
+    /// 想再藏起来，用条目菜单里的「隐藏原文件」。
     private func revealKeepingVisibility(_ url: URL) {
         if HiddenFlag.isHidden(url) {
-            HiddenFlag.setHidden(false, for: url)
-            itemsModel.refresh(force: true)
+            Store.shared.setPathHidden(false, path: url.path)
+            BoxWindowManager.shared.refresh(boxID: boxID)
         }
         FileActions.reveal(url)
     }
 
     private func confirmClear() {
-        let count = itemsModel.items.count
-        guard count > 0 else { return }
-        guard FileActions.confirm(
-            title: "清空「\(box.name)」里的 \(count) 个条目？",
-            message: "移除后这些文件会恢复显示。",
-            confirmTitle: "清空"
-        ) else { return }
-        withAnimation { itemsModel.removeAll() }
+        Commands.confirmAndClearBox(boxID)
     }
 
     private func confirmTrash(_ url: URL) {
@@ -301,21 +295,12 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
             confirmTitle: "移到废纸篓"
         ) else { return }
         if FileActions.moveToTrash(url) {
-            itemsModel.refresh(force: true)
+            BoxWindowManager.shared.refresh(boxID: boxID)
         }
     }
 
     private func confirmDelete() {
-        let count = itemsModel.items.count
-        let message = count == 0
-            ? "框里没有条目。"
-            : "框内 \(count) 个文件会恢复显示。"
-        guard FileActions.confirm(
-            title: "删除整理框「\(box.name)」？",
-            message: message,
-            confirmTitle: "删除整理框"
-        ) else { return }
-        Store.shared.removeBox(id: boxID)
+        Commands.confirmAndDeleteBox(boxID)
     }
 
     // MARK: NSWindowDelegate

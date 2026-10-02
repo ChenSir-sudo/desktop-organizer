@@ -83,19 +83,16 @@ final class BoxItemsModel: ObservableObject {
 
         var resolved: [ResolvedItem] = []
         resolved.reserveCapacity(box.items.count)
-        var missing = 0
 
         for item in box.items {
-            var isDirectory: ObjCBool = false
-            let exists = FileManager.default.fileExists(atPath: item.path, isDirectory: &isDirectory)
-            if !exists { missing += 1 }
+            let info = item.url.fileInfo
             resolved.append(
                 ResolvedItem(
                     id: item.id,
                     url: item.url,
                     name: item.name,
-                    exists: exists,
-                    isDirectory: isDirectory.boolValue,
+                    exists: info.exists,
+                    isDirectory: info.isDirectory,
                     isApplication: item.url.pathExtension.lowercased() == "app"
                 )
             )
@@ -105,25 +102,7 @@ final class BoxItemsModel: ObservableObject {
         guard force || signature != lastSignature else { return }
         lastSignature = signature
         items = resolved
-        missingCount = missing
+        missingCount = box.missingItemCount
     }
 
-    // MARK: 改动
-
-    @discardableResult
-    func add(_ urls: [URL]) -> Int {
-        let added = Store.shared.addItems(urls, to: boxID)
-        if added > 0 { refresh(force: true) }
-        return added
-    }
-
-    func remove(_ ids: Set<UUID>) {
-        Store.shared.removeItems(ids, from: boxID)
-        refresh(force: true)
-    }
-
-    func removeAll() {
-        Store.shared.removeAllItems(from: boxID)
-        refresh(force: true)
-    }
 }

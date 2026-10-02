@@ -119,6 +119,11 @@ final class BoxWindowManager {
         if allHidden { showAll() } else { hideAll() }
     }
 
+    /// 只刷新某一个整理框的内容。
+    func refresh(boxID: UUID) {
+        controllers[boxID]?.itemsModel.refresh(force: true)
+    }
+
     func refreshAll() {
         for controller in controllers.values {
             controller.itemsModel.refresh(force: true)

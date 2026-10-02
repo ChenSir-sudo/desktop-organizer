@@ -19,6 +19,8 @@ struct BoxActions {
     var revealItem: (URL) -> Void = { _ in }
     var copyItemPath: (URL) -> Void = { _ in }
     var openInEditor: (URL) -> Void = { _ in }
+    /// 菜单上显示的编辑器名字，没装编辑器时为空
+    var editorName: String = ""
     var openInTerminal: (URL) -> Void = { _ in }
     var removeItem: (UUID) -> Void = { _ in }
     var trashItem: (URL) -> Void = { _ in }
@@ -82,7 +84,7 @@ struct BoxView: View {
     private var dropTargetBinding: Binding<Bool> {
         Binding(
             get: { ui.isDropTargeted },
-            set: { targeted in withAnimation(.easeOut(duration: 0.14)) { ui.isDropTargeted = targeted } }
+            set: { targeted in withAnimation(Motion.dropTarget) { ui.isDropTargeted = targeted } }
         )
     }
 
@@ -110,9 +112,7 @@ struct BoxView: View {
                 DragPayload.payload(from: provider) { payload in
                     guard payload.boxID != boxID else { return }
                     DragSession.shared.handled = true
-                    Store.shared.transferItem(payload.itemID, from: payload.boxID, to: boxID, at: model.items.count)
-                    model.refresh(force: true)
-                    BoxWindowManager.shared.refreshAll()
+                    Commands.transfer(itemID: payload.itemID, from: payload.boxID, to: boxID, at: model.items.count)
                     DragSession.shared.finish()
                 }
                 handled = true
@@ -143,7 +143,7 @@ struct BoxView: View {
                     ))
             }
         }
-        .animation(.spring(response: 0.34, dampingFraction: 0.86), value: ui.page)
+        .animation(Motion.page, value: ui.page)
     }
 
     private var contentPage: some View {
@@ -213,7 +213,7 @@ struct BoxView: View {
         HStack(spacing: 2) {
             iconButton("plus", help: "添加文件") { actions.addFiles() }
             iconButton("slider.horizontal.3", help: "设置") {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+                withAnimation(Motion.page) {
                     ui.page = .settings
                 }
             }
@@ -225,7 +225,7 @@ struct BoxView: View {
         .contentShape(Rectangle())
         .opacity(ui.actionAreaHovered ? 1 : 0)
         .scaleEffect(ui.actionAreaHovered ? 1 : 0.92, anchor: .trailing)
-        .animation(.easeOut(duration: 0.18), value: ui.actionAreaHovered)
+        .animation(Motion.hover, value: ui.actionAreaHovered)
     }
 
     /// 文件数量气泡。跟右上角按钮一起显隐，锚点在右侧，像是从按钮那边长出来的。
@@ -239,7 +239,7 @@ struct BoxView: View {
             .background(Capsule().fill(Color.primary.opacity(0.08)))
             .opacity(ui.actionAreaHovered ? 1 : 0)
             .scaleEffect(ui.actionAreaHovered ? 1 : 0.92, anchor: .trailing)
-            .animation(.easeOut(duration: 0.18), value: ui.actionAreaHovered)
+            .animation(Motion.hover, value: ui.actionAreaHovered)
     }
 
     private func iconButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
@@ -292,7 +292,7 @@ struct BoxView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 10)
                 .padding(.bottom, 4)
-                .animation(.spring(response: 0.32, dampingFraction: 0.82), value: model.items)
+                .animation(Motion.items, value: model.items)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // 有内容时 ScrollView 铺满整块，空白处的落点会被它吃掉
@@ -413,12 +413,9 @@ struct ItemDropDelegate: DropDelegate {
         if let payload = session.payload {
             session.handled = true
             if payload.boxID == boxID {
-                Store.shared.moveItem(in: boxID, itemID: payload.itemID, to: targetIndex)
-                model.refresh(force: true)
+                Commands.reorder(in: boxID, itemID: payload.itemID, to: targetIndex)
             } else {
-                Store.shared.transferItem(payload.itemID, from: payload.boxID, to: boxID, at: targetIndex)
-                model.refresh(force: true)
-                BoxWindowManager.shared.refreshAll()
+                Commands.transfer(itemID: payload.itemID, from: payload.boxID, to: boxID, at: targetIndex)
             }
             DispatchQueue.main.async { session.finish() }
             return true
@@ -444,8 +441,7 @@ struct ItemDropDelegate: DropDelegate {
                     )
                 }
             } else {
-                Store.shared.addItems(urls, to: boxID, at: targetIndex)
-                model.refresh(force: true)
+                Commands.add(urls, to: boxID, at: targetIndex)
             }
         }
         return true
@@ -493,7 +489,7 @@ struct ItemTile: View {
                 .strokeBorder(Color.accentColor.opacity(isFolderDropTarget ? 0.9 : 0), lineWidth: 2)
         )
         .scaleEffect(isFolderDropTarget ? 1.08 : 1)
-        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isFolderDropTarget)
+        .animation(Motion.folderDrop, value: isFolderDropTarget)
         .opacity(isBeingDragged ? 0.35 : 1)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -517,7 +513,9 @@ struct ItemTile: View {
     private var menu: some View {
         if item.exists {
             Button("打开") { actions.openItem(item.url) }
-            Button("用 VSCode 打开") { actions.openInEditor(item.url) }
+            if !actions.editorName.isEmpty {
+                Button("用 \(actions.editorName) 打开") { actions.openInEditor(item.url) }
+            }
             Button("在终端中打开") { actions.openInTerminal(item.url) }
             Button("在访达中显示") { actions.revealItem(item.url) }
             Divider()

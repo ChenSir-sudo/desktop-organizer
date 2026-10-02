@@ -58,13 +58,10 @@ struct BoxItem: Codable, Identifiable, Equatable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
-            ((try? c.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback
-        }
-        id = value(.id, UUID())
-        path = value(.path, "")
-        addedAt = value(.addedAt, Date())
-        didHide = value(.didHide, false)
+        id = c.value(.id, UUID())
+        path = c.value(.path, "")
+        addedAt = c.value(.addedAt, Date())
+        didHide = c.value(.didHide, false)
     }
 
     var url: URL { URL(fileURLWithPath: path) }
@@ -101,21 +98,18 @@ struct BoxConfig: Codable, Identifiable, Equatable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
-            ((try? c.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback
-        }
-        id = value(.id, UUID())
-        name = value(.name, "整理框")
-        items = value(.items, [])
-        frameX = value(.frameX, 0)
-        frameY = value(.frameY, 0)
-        frameW = value(.frameW, 300)
-        frameH = value(.frameH, 360)
-        opacity = value(.opacity, 0.8)
-        material = value(.material, .hud)
-        cornerRadius = value(.cornerRadius, 20)
-        floatOnTop = value(.floatOnTop, false)
-        accentHex = value(.accentHex, "0A84FF")
+        id = c.value(.id, UUID())
+        name = c.value(.name, "整理框")
+        items = c.value(.items, [])
+        frameX = c.value(.frameX, 0)
+        frameY = c.value(.frameY, 0)
+        frameW = c.value(.frameW, 300)
+        frameH = c.value(.frameH, 360)
+        opacity = c.value(.opacity, 0.8)
+        material = c.value(.material, .hud)
+        cornerRadius = c.value(.cornerRadius, 20)
+        floatOnTop = c.value(.floatOnTop, false)
+        accentHex = c.value(.accentHex, "0A84FF")
         legacyFolderPath = ((try? c.decodeIfPresent(String.self, forKey: .legacyFolderPath)) ?? nil)
             ?? ((try? c.decodeIfPresent(String.self, forKey: .folderPath)) ?? nil)
     }
@@ -134,6 +128,12 @@ struct BoxConfig: Codable, Identifiable, Equatable {
         try c.encode(cornerRadius, forKey: .cornerRadius)
         try c.encode(floatOnTop, forKey: .floatOnTop)
         try c.encode(accentHex, forKey: .accentHex)
+    }
+
+    /// 引用已经失效（文件被移走或删掉）的条目数。
+    /// 主窗口卡片和整理框内容都用它，避免同一个事实两处各算一遍。
+    var missingItemCount: Int {
+        items.reduce(0) { $0 + ($1.exists ? 0 : 1) }
     }
 
     var frame: CGRect {
@@ -175,18 +175,15 @@ struct Preferences: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
-            ((try? c.decodeIfPresent(T.self, forKey: key)) ?? nil) ?? fallback
-        }
-        defaultOpacity = value(.defaultOpacity, 0.8)
-        defaultMaterial = value(.defaultMaterial, .hud)
-        defaultCornerRadius = value(.defaultCornerRadius, 20)
-        defaultFloatOnTop = value(.defaultFloatOnTop, false)
-        confirmBeforeCategorize = value(.confirmBeforeCategorize, true)
-        showMenuBarIcon = value(.showMenuBarIcon, true)
-        openMainWindowOnLaunch = value(.openMainWindowOnLaunch, true)
-        removeInstallerAfterInstall = value(.removeInstallerAfterInstall, true)
-        didRunInstallerCleanup = value(.didRunInstallerCleanup, false)
+        defaultOpacity = c.value(.defaultOpacity, 0.8)
+        defaultMaterial = c.value(.defaultMaterial, .hud)
+        defaultCornerRadius = c.value(.defaultCornerRadius, 20)
+        defaultFloatOnTop = c.value(.defaultFloatOnTop, false)
+        confirmBeforeCategorize = c.value(.confirmBeforeCategorize, true)
+        showMenuBarIcon = c.value(.showMenuBarIcon, true)
+        openMainWindowOnLaunch = c.value(.openMainWindowOnLaunch, true)
+        removeInstallerAfterInstall = c.value(.removeInstallerAfterInstall, true)
+        didRunInstallerCleanup = c.value(.didRunInstallerCleanup, false)
     }
 }
 
@@ -200,6 +197,31 @@ private struct AppConfig: Codable {
     var version: Int = kConfigVersion
     var boxes: [BoxConfig] = []
     var prefs: Preferences = Preferences()
+    /// 本程序隐藏过的路径。跟整理框解耦，见 Store.hiddenPaths 的说明。
+    var hiddenPaths: [String] = []
+
+    /// 必须宽容解码。
+    ///
+    /// Swift 合成的 init(from:) 对**非可选**属性一律要求键存在，即使它有默认值 ——
+    /// 给这个结构加字段时，旧配置会因为缺键整份解码失败。load() 用的又是 try?，
+    /// 失败会静默变成空配置，紧接着 save() 把空配置写回去 —— 用户的整理框就被清空了。
+    /// 这个坑真的发生过一次。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = c.value(.version, kConfigVersion)
+        boxes = c.value(.boxes, [])
+        prefs = c.value(.prefs, Preferences())
+        hiddenPaths = c.value(.hiddenPaths, [])
+    }
+
+    init() {}
+
+    init(version: Int, boxes: [BoxConfig], prefs: Preferences, hiddenPaths: [String]) {
+        self.version = version
+        self.boxes = boxes
+        self.prefs = prefs
+        self.hiddenPaths = hiddenPaths
+    }
 }
 
 // MARK: - Store
@@ -211,6 +233,13 @@ final class Store: ObservableObject {
     @Published var prefs: Preferences = Preferences() {
         didSet { scheduleSave() }
     }
+
+    /// 本程序隐藏过的路径。
+    ///
+    /// 刻意与整理框解耦：同一个文件可以被多个整理框引用，若只靠条目上的 didHide
+    /// 判断，第二个框加入时该文件已经是隐藏状态、不会被认领，于是最后一个框移除它
+    /// 时谁都不负责恢复 —— 文件就永久隐藏了。
+    private(set) var hiddenPaths: Set<String> = []
 
     private var saveWorkItem: DispatchWorkItem?
     private var isLoading = false
@@ -228,7 +257,9 @@ final class Store: ObservableObject {
            let config = try? JSONDecoder().decode(AppConfig.self, from: data) {
             boxes = config.boxes
             prefs = config.prefs
+            hiddenPaths = Set(config.hiddenPaths)
             migrateLegacyFolders()
+            migrateHiddenPaths()
             migrateToDesktopLayer(from: config.version)
         }
 
@@ -236,6 +267,16 @@ final class Store: ObservableObject {
             createStarterBoxes()
         }
         save()
+    }
+
+    /// 老配置只有条目级的 didHide。把它汇总成 hiddenPaths，之后由 hiddenPaths 说了算。
+    private func migrateHiddenPaths() {
+        guard hiddenPaths.isEmpty else { return }
+        for box in boxes {
+            for item in box.items where item.didHide {
+                hiddenPaths.insert(item.path)
+            }
+        }
     }
 
     /// v3 起整理框默认贴在桌面层（在应用窗口下面），而不是浮在所有窗口之上。
@@ -266,7 +307,8 @@ final class Store: ObservableObject {
     func save() {
         saveWorkItem?.cancel()
         saveWorkItem = nil
-        let config = AppConfig(version: kConfigVersion, boxes: boxes, prefs: prefs)
+        let config = AppConfig(version: kConfigVersion, boxes: boxes, prefs: prefs,
+                               hiddenPaths: Array(hiddenPaths).sorted())
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(config) else { return }
@@ -343,9 +385,13 @@ final class Store: ObservableObject {
             guard !path.isEmpty, !known.contains(path), !BoxConfig.isProtected(url) else { continue }
 
             var item = BoxItem(path: path)
-            // 已经是隐藏状态的话不认领（可能是用户自己隐藏的，或者是别的框隐藏的）
-            if !HiddenFlag.isHidden(url) {
-                item.didHide = HiddenFlag.setHidden(true, for: url)
+            if HiddenFlag.isHidden(url) {
+                // 已经是隐藏状态：可能是我们之前隐藏的（另一个框引用过），
+                // 也可能是用户自己隐藏的。交给 hiddenPaths 去记，不在这里下结论。
+                item.didHide = hiddenPaths.contains(path)
+            } else if HiddenFlag.setHidden(true, for: url) {
+                item.didHide = true
+                hiddenPaths.insert(path)
             }
             fresh.append(item)
             known.insert(path)
@@ -383,14 +429,18 @@ final class Store: ObservableObject {
     }
 
     /// 恢复原位置显示。只处理我们隐藏过的，且只有当没有任何整理框还引用它时才恢复。
+    /// 恢复原位置显示。判据是 hiddenPaths（我们确实隐藏过），
+    /// 并且此刻已经没有任何整理框还引用它。
     private func restoreVisibility(of items: [BoxItem]) {
-        for item in items where item.didHide {
+        for item in items {
+            let path = item.path
+            guard hiddenPaths.contains(path) else { continue }
             let stillReferenced = boxes.contains { box in
-                box.items.contains { $0.path == item.path }
+                box.items.contains { $0.path == path }
             }
-            if !stillReferenced {
-                HiddenFlag.setHidden(false, for: item.url)
-            }
+            guard !stillReferenced else { continue }
+            HiddenFlag.setHidden(false, for: item.url)
+            hiddenPaths.remove(path)
         }
     }
 
@@ -398,21 +448,21 @@ final class Store: ObservableObject {
     @discardableResult
     func restoreAllHidden() -> Int {
         var count = 0
-        for index in boxes.indices {
-            for itemIndex in boxes[index].items.indices where boxes[index].items[itemIndex].didHide {
-                if HiddenFlag.setHidden(false, for: boxes[index].items[itemIndex].url) { count += 1 }
-                boxes[index].items[itemIndex].didHide = false
+        for path in hiddenPaths {
+            if HiddenFlag.setHidden(false, for: URL(fileURLWithPath: path)) { count += 1 }
+        }
+        hiddenPaths.removeAll()
+        for boxIndex in boxes.indices {
+            for itemIndex in boxes[boxIndex].items.indices {
+                boxes[boxIndex].items[itemIndex].didHide = false
             }
         }
         if count > 0 { scheduleSave() }
         return count
     }
 
-    var hiddenItemCount: Int {
-        boxes.reduce(0) { total, box in
-            total + box.items.filter(\.didHide).count
-        }
-    }
+    /// 当前被本程序隐藏着的文件数（与整理框数量无关）。
+    var hiddenItemCount: Int { hiddenPaths.count }
 
     // MARK: 拖拽
 
@@ -446,10 +496,28 @@ final class Store: ObservableObject {
         guard let boxIndex = index(of: boxID),
               let itemIndex = boxes[boxIndex].items.firstIndex(where: { $0.id == itemID }) else { return }
         let url = boxes[boxIndex].items[itemIndex].url
-        if HiddenFlag.setHidden(hidden, for: url) {
-            boxes[boxIndex].items[itemIndex].didHide = hidden
-            scheduleSave()
+        guard HiddenFlag.setHidden(hidden, for: url) else { return }
+        if hidden {
+            hiddenPaths.insert(url.standardizedFileURL.path)
+        } else {
+            hiddenPaths.remove(url.standardizedFileURL.path)
         }
+        boxes[boxIndex].items[itemIndex].didHide = hidden
+        scheduleSave()
+    }
+
+    /// 按路径改隐藏状态。用于「在访达中显示」这类只有 URL、没有条目 ID 的场景。
+    func setPathHidden(_ hidden: Bool, path: String) {
+        let url = URL(fileURLWithPath: path)
+        guard HiddenFlag.setHidden(hidden, for: url) else { return }
+        let key = url.standardizedFileURL.path
+        if hidden { hiddenPaths.insert(key) } else { hiddenPaths.remove(key) }
+        for boxIndex in boxes.indices {
+            for itemIndex in boxes[boxIndex].items.indices where boxes[boxIndex].items[itemIndex].path == path {
+                boxes[boxIndex].items[itemIndex].didHide = hidden
+            }
+        }
+        scheduleSave()
     }
 
     func isItemHidden(_ itemID: UUID, in boxID: UUID) -> Bool {

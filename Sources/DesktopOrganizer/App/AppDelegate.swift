@@ -188,9 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func newBox() {
-        let box = store.addBox()
-        windowManager.sync(store.boxes)
-        windowManager.focus(id: box.id)
+        Commands.createBox()
     }
 
     @objc private func focusBox(_ sender: NSMenuItem) {
@@ -203,10 +201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func categorize() {
         mainWindowController?.show()
-        let outcome = DeskCategorizer.categorizeIntoBoxes()
-        windowManager.sync(store.boxes)
-        windowManager.showAll()
-        FileActions.info(title: "归类完成", message: outcome.summary)
+        Commands.categorizeDesktop()
     }
 
     @objc private func quit() {
