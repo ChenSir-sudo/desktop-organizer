@@ -42,6 +42,24 @@ struct DragPayload: Equatable {
         return provider
     }
 
+    /// 从若干 provider 里把文件 URL 读出来（异步，最后回主线程）。
+    static func loadFileURLs(from providers: [NSItemProvider], completion: @escaping ([URL]) -> Void) {
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var collected: [URL] = []
+
+        for provider in providers {
+            group.enter()
+            _ = provider.loadObject(ofClass: NSURL.self) { object, _ in
+                if let url = object as? URL {
+                    lock.lock(); collected.append(url); lock.unlock()
+                }
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) { completion(collected) }
+    }
+
     static func payload(from provider: NSItemProvider, completion: @escaping (DragPayload) -> Void) {
         guard provider.hasItemConformingToTypeIdentifier(typeIdentifier) else { return }
         provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in

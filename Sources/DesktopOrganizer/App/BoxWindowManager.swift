@@ -16,7 +16,7 @@ final class BoxWindowManager {
     private var hiddenIDs = Set<UUID>()
     private let guideOverlay = GuideOverlayWindow()
     private var cancellables = Set<AnyCancellable>()
-    private var dragOutMonitor: Any?
+    private var dragOutTimer: Timer?
 
     private init() {
         // 拖到任何整理框之外松手 = 把它从框里拿出来（原文件恢复显示）
@@ -26,30 +26,33 @@ final class BoxWindowManager {
             .store(in: &cancellables)
     }
 
+    /// 拖拽会话会吞掉鼠标事件，`addLocalMonitorForEvents(.leftMouseUp)` 收不到，
+    /// 所以改成轮询按键状态 —— 松开的那一刻就是拖拽结束。
     private func armDragOutWatch(_ payload: DragPayload) {
         disarmDragOutWatch()
-        dragOutMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
-            guard let self else { return event }
-            self.disarmDragOutWatch()
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            guard NSEvent.pressedMouseButtons == 0 else { return }
+            timer.invalidate()
+            self.dragOutTimer = nil
             // 让 DropDelegate / onDrop 先把「被接住」的状态写完
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                guard let self else { return }
                 let session = DragSession.shared
                 defer { session.finish() }
                 guard !session.handled else { return }
-                let location = NSEvent.mouseLocation
-                guard !self.containsScreenPoint(location) else { return }
+                guard !self.containsScreenPoint(NSEvent.mouseLocation) else { return }
                 Store.shared.removeItems([payload.itemID], from: payload.boxID)
                 self.refreshAll()
             }
-            return event
         }
+        RunLoop.main.add(timer, forMode: .common)
+        dragOutTimer = timer
     }
 
     private func disarmDragOutWatch() {
-        if let dragOutMonitor {
-            NSEvent.removeMonitor(dragOutMonitor)
-            self.dragOutMonitor = nil
-        }
+        dragOutTimer?.invalidate()
+        dragOutTimer = nil
     }
 
     /// 屏幕坐标是否落在任何一个整理框窗口里。

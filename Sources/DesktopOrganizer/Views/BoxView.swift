@@ -252,7 +252,6 @@ struct BoxView: View {
                     ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
                         ItemTile(
                             item: item,
-                            hidden: HiddenFlag.isHidden(item.url),
                             isBeingDragged: session.payload?.itemID == item.id,
                             actions: actions
                         )
@@ -264,7 +263,7 @@ struct BoxView: View {
                             dragPreview(for: item)
                         }
                         .onDrop(
-                            of: [DragPayload.utType],
+                            of: [DragPayload.utType, .fileURL],
                             delegate: ItemDropDelegate(
                                 targetIndex: index,
                                 boxID: boxID,
@@ -360,31 +359,43 @@ struct ItemDropDelegate: DropDelegate {
     @ObservedObject var model: BoxItemsModel
     @ObservedObject var session: DragSession
 
+    /// 必须同时接受外部文件 URL。只认自定义类型的话，格子一多就会铺满整个框，
+    /// 从访达拖进来的文件落在格子上会被拒绝，表现成「文件一多就拖不进去」。
     func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [DragPayload.utType])
+        info.hasItemsConforming(to: [DragPayload.utType, UTType.fileURL])
     }
 
     func dropEntered(info: DropInfo) {
-        guard let payload = session.payload else { return }
+        guard let payload = session.payload, payload.boxID == boxID else { return }
         session.handled = true
-        guard payload.boxID == boxID else { return }
         Store.shared.moveItem(in: boxID, itemID: payload.itemID, to: targetIndex)
         model.refresh(force: true)
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        guard let payload = session.payload else { return false }
-        session.handled = true
-
-        if payload.boxID == boxID {
-            Store.shared.moveItem(in: boxID, itemID: payload.itemID, to: targetIndex)
-            model.refresh(force: true)
-        } else {
-            Store.shared.transferItem(payload.itemID, from: payload.boxID, to: boxID, at: targetIndex)
-            model.refresh(force: true)
-            BoxWindowManager.shared.refreshAll()
+        // 内部拖拽：重排 / 跨框转移
+        if let payload = session.payload {
+            session.handled = true
+            if payload.boxID == boxID {
+                Store.shared.moveItem(in: boxID, itemID: payload.itemID, to: targetIndex)
+                model.refresh(force: true)
+            } else {
+                Store.shared.transferItem(payload.itemID, from: payload.boxID, to: boxID, at: targetIndex)
+                model.refresh(force: true)
+                BoxWindowManager.shared.refreshAll()
+            }
+            DispatchQueue.main.async { session.finish() }
+            return true
         }
-        DispatchQueue.main.async { session.finish() }
+
+        // 外部文件落在某个格子上：插到这个位置
+        let providers = info.itemProviders(for: [UTType.fileURL])
+        guard !providers.isEmpty else { return false }
+        DragPayload.loadFileURLs(from: providers) { urls in
+            guard !urls.isEmpty else { return }
+            Store.shared.addItems(urls, to: boxID, at: targetIndex)
+            model.refresh(force: true)
+        }
         return true
     }
 }
@@ -393,7 +404,6 @@ struct ItemDropDelegate: DropDelegate {
 
 struct ItemTile: View {
     let item: ResolvedItem
-    let hidden: Bool
     let isBeingDragged: Bool
     let actions: BoxActions
 
@@ -410,8 +420,6 @@ struct ItemTile: View {
 
                 if item.isBroken {
                     badge("exclamationmark.triangle.fill", color: .orange)
-                } else if hidden {
-                    badge("eye.slash.fill", color: .gray)
                 }
             }
             Text(item.name)
@@ -454,7 +462,7 @@ struct ItemTile: View {
             Button("在终端中打开") { actions.openInTerminal(item.url) }
             Button("在访达中显示") { actions.revealItem(item.url) }
             Divider()
-            if hidden {
+            if HiddenFlag.isHidden(item.url) {
                 Button("显示原文件") { actions.toggleItemHidden(item.id, false) }
             } else {
                 Button("隐藏原文件") { actions.toggleItemHidden(item.id, true) }

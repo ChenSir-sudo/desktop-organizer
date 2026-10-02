@@ -312,10 +312,11 @@ final class Store: ObservableObject {
     /// 往框里加条目。进框的同时把原位置隐藏起来（路径不变）。
     /// 已在框内或受保护的路径会跳过，返回真正新增的数量。
     @discardableResult
-    func addItems(_ urls: [URL], to id: UUID) -> Int {
-        guard let index = index(of: id) else { return 0 }
-        var known = Set(boxes[index].items.map(\.path))
-        var added = 0
+    func addItems(_ urls: [URL], to id: UUID, at position: Int? = nil) -> Int {
+        guard let boxIndex = index(of: id) else { return 0 }
+        var known = Set(boxes[boxIndex].items.map(\.path))
+        var fresh: [BoxItem] = []
+
         for url in urls {
             let path = url.standardizedFileURL.path
             guard !path.isEmpty, !known.contains(path), !BoxConfig.isProtected(url) else { continue }
@@ -325,12 +326,19 @@ final class Store: ObservableObject {
             if !HiddenFlag.isHidden(url) {
                 item.didHide = HiddenFlag.setHidden(true, for: url)
             }
-            boxes[index].items.append(item)
+            fresh.append(item)
             known.insert(path)
-            added += 1
         }
-        if added > 0 { scheduleSave() }
-        return added
+
+        guard !fresh.isEmpty else { return 0 }
+        if let position {
+            let at = max(0, min(position, boxes[boxIndex].items.count))
+            boxes[boxIndex].items.insert(contentsOf: fresh, at: at)
+        } else {
+            boxes[boxIndex].items.append(contentsOf: fresh)
+        }
+        scheduleSave()
+        return fresh.count
     }
 
     @discardableResult
