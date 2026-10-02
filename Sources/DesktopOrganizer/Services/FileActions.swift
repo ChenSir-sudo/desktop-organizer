@@ -230,7 +230,14 @@ enum FileActions {
         return panel.runModal() == .OK ? panel.urls : []
     }
 
+    /// 无头自检模式（--selftest / --safetest 等）绝不能弹模态框 ——
+    /// `runModal()` 在没有窗口会话时会永久阻塞（实测把 --safetest 挂死过）。
+    private static var isHeadless: Bool {
+        Store.shared.persistenceSuppressed || NSApp.windows.isEmpty
+    }
+
     static func confirm(title: String, message: String, confirmTitle: String) -> Bool {
+        guard !isHeadless else { return true }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -242,6 +249,10 @@ enum FileActions {
     }
 
     static func info(title: String, message: String) {
+        guard !isHeadless else {
+            NSLog("[桌面整理] %@：%@", title, message)
+            return
+        }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .informational
