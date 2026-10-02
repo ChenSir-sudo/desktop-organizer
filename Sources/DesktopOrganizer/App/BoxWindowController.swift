@@ -124,6 +124,7 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
             DragSession.shared.folderDropTargetID = id
         }
         dropContainer.boxID = boxID
+        dropContainer.eventForwarder = hostView
         dropContainer.selectionProvider = { [weak self] in self?.ui.selectedItemIDs ?? [] }
         dropContainer.onSelectionChange = { [weak self] id, flags in
             self?.applySelection(to: id, flags: flags)

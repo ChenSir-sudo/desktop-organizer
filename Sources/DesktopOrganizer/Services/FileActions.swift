@@ -18,6 +18,10 @@ enum FileActions {
     /// 移到废纸篓 —— 这是整个程序里唯一会动文件的地方，且必须由用户逐个触发并二次确认。
     @discardableResult
     static func moveToTrash(_ url: URL) -> Bool {
+        guard !BoxConfig.isProtected(url) else {
+            OperationsLog.append("拒绝把受保护路径移到废纸篓: \(url.path)")
+            return false
+        }
         OperationsLog.append("移到废纸篓: \(url.path)")
         do {
             try FileManager.default.trashItem(at: url, resultingItemURL: nil)
@@ -78,14 +82,40 @@ enum FileActions {
         NSWorkspace.shared.open([directory], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
     }
 
+    /// 两个路径是否在同一个宗卷上。
+    ///
+    /// 这不是优化，是**安全保证的前提**：同宗卷的 `moveItem` 在内核层面就是一次
+    /// 原子重命名 —— 要么完成，要么完全没发生，**不可能出现「源没了、目标也没有」
+    /// 的中间态**。跨宗卷时 Foundation 内部会退化成「复制 + 删除」，那条路径
+    /// 中途失败时的行为我没有验证过，也不打算拿用户的数据去验证，所以直接拒绝。
+    private static func sameVolume(_ a: URL, _ b: URL) -> Bool {
+        let va = try? a.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier
+        let vb = try? b.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier
+        guard let va, let vb else { return false }
+        return String(describing: va) == String(describing: vb)
+    }
+
+    /// 搬移结果。`moved` 记录「从哪搬到哪」，调用方据此决定哪些条目真的成功了
+    /// —— 只有成功的才允许从整理框里摘掉。
     struct MoveOutcome {
-        var moved: [URL] = []
+        var moved: [(from: URL, to: URL)] = []
         var failures: [(url: URL, reason: String)] = []
     }
 
+    /// 独占重命名用的标志（Darwin 的 `RENAME_EXCL`）。
+    private static let renameExclusive: UInt32 = 0x0000_0004
+
     /// 把文件移进某个文件夹。
-    /// 只有用户明确把文件拖到某个文件夹图标上才会走到这里 —— 这是显式意图，
-    /// 但仍然拒绝受保护路径，并且不覆盖同名文件。
+    ///
+    /// **搬移原语是 `renamex_np(RENAME_EXCL)`，不是 `FileManager.moveItem`。** 理由：
+    /// - 它由内核保证：同设备 = 一次原子重命名，要么完成要么完全没发生，
+    ///   不可能出现「源没了、目标也没有」。
+    /// - 不同设备时内核返回 `EXDEV`，**永远不会**退化成「复制 + 删除」——
+    ///   这正是之前丢文件的那条路。遇到 EXDEV 我们直接拒绝并提示用访达。
+    /// - `RENAME_EXCL` 保证目标已存在时失败（`EEXIST`），**绝不覆盖同名文件**；
+    ///   而 POSIX 的 `rename(2)` 是会覆盖的，这里不能直接用。
+    ///
+    /// 失败时源文件一定原封不动。
     static func move(_ urls: [URL], into folder: URL) -> MoveOutcome {
         let fm = FileManager.default
         var outcome = MoveOutcome()
@@ -102,39 +132,48 @@ enum FileActions {
             guard fm.fileExists(atPath: src.path) else {
                 outcome.failures.append((src, "文件不存在")); continue
             }
-            if src.deletingLastPathComponent().path == destinationRoot.path { continue }   // 已经在里面
-            if destinationRoot.path.hasPrefix(src.path + "/") {
+            if src.deletingLastPathComponent().path == destinationRoot.path { continue }
+            if destinationRoot.path == src.path || destinationRoot.path.hasPrefix(src.path + "/") {
                 outcome.failures.append((src, "不能把文件夹移进它自己")); continue
             }
             if BoxConfig.isProtected(src) {
                 outcome.failures.append((src, "受保护的路径")); continue
             }
 
-            let destination = uniqueDestination(for: src, in: destinationRoot)
-            OperationsLog.append("移入文件夹: \(src.path) -> \(destination.path)")
-            do {
-                // 这里**不要**任何手写的「复制 + 删除」兜底。
-                //
-                // 之前有过一段：catch 里 copyItem 之后再 removeItem。它建立在
-                // 一个我从没验证过的假设上——「moveItem 不能跨宗卷」。实测（建一个
-                // 另一宗卷的磁盘映像再移过去）：**moveItem 自己就能跨宗卷**，
-                // 内容完整、源消失。所以那段兜底纯属多余，而它却是全程序唯一
-                // 绕过废纸篓的永久删除路径 —— 用户丢过一个重要目录。
-                //
-                // 现在的原则：失败就失败，源文件原封不动。绝不为了「让功能成功」
-                // 去删用户的东西。
-                try fm.moveItem(at: src, to: destination)
-                outcome.moved.append(destination)
-                OperationsLog.append("  成功")
-            } catch {
-                outcome.failures.append((src, error.localizedDescription))
-                OperationsLog.append("  失败（源文件保持不动）: \(error.localizedDescription)")
+            OperationsLog.append("移入文件夹: \(src.path) -> \(destinationRoot.path)")
+
+            // 目标同名时自动加序号。RENAME_EXCL 会挡住并发抢建，所以这里最多重试几次。
+            var landed: URL?
+            var lastError = ""
+            for _ in 0..<64 {
+                let destination = uniqueDestination(for: src, in: destinationRoot)
+                let code = exclusiveRename(src, destination)
+                if code == 0 {
+                    landed = destination
+                    break
+                }
+                if errno == EEXIST { continue }          // 刚被别的东西占了，换个名字再来
+                lastError = String(cString: strerror(errno))
+                break
+            }
+
+            if let landed {
+                outcome.moved.append((from: src, to: landed))
+                OperationsLog.append("  成功 -> \(landed.path)")
+            } else {
+                let reason = lastError.isEmpty ? "重命名失败" : lastError
+                let friendly = reason.contains("Cross-device") || reason.contains("cross-device")
+                    ? "目标在不同磁盘上，请用访达操作"
+                    : reason
+                outcome.failures.append((src, friendly))
+                OperationsLog.append("  失败（源文件保持不动）: \(reason)")
             }
         }
         return outcome
     }
 
-    /// 同名文件自动加序号，绝不覆盖。
+    /// 同名文件自动加序号，**绝不覆盖**。
+    /// 注意 `RENAME_EXCL` 已经在内核层面兜住了并发抢建，这里只是给出候选名字。
     private static func uniqueDestination(for source: URL, in folder: URL) -> URL {
         let fm = FileManager.default
         var isDirectory: ObjCBool = false
@@ -160,6 +199,16 @@ enum FileActions {
             counter += 1
         }
         return folder.appendingPathComponent("\(UUID().uuidString)-\(name)")
+    }
+
+    /// 独占重命名。返回 0 表示成功，非 0 时 `errno` 有效。
+    private static func exclusiveRename(_ from: URL, _ to: URL) -> Int32 {
+        from.withUnsafeFileSystemRepresentation { src in
+            to.withUnsafeFileSystemRepresentation { dst in
+                guard let src, let dst else { return Int32(EINVAL) }
+                return renamex_np(src, dst, renameExclusive)
+            }
+        }
     }
 
     static func copyPath(_ url: URL) {

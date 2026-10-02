@@ -178,6 +178,8 @@ struct BoxView: View {
                 .onChange(of: nameFocused) { _, focused in
                     if !focused && isEditingName { commitName() }
                 }
+                // 这里刻意不过滤是哪个窗口失焦：多提交一次只是把已经打进 Store 的名字
+                // 再收个尾，方向是"更不容易丢名字"。反过来过滤掉才可能漏掉收尾。
                 .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
                     if isEditingName { commitName() }
                 }

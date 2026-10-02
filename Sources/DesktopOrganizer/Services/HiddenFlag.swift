@@ -55,7 +55,9 @@ enum HiddenFlag {
     private static func runChflags(_ hidden: Bool, _ url: URL) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/chflags")
-        process.arguments = [hidden ? "hidden" : "nohidden", url.path]
+        // -h：只改这个路径本身。不加的话符号链接会被"跟随"，
+        // 结果改到链接指向的目标文件上，而不是链接本身。
+        process.arguments = ["-h", hidden ? "hidden" : "nohidden", url.path]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try? process.run()

@@ -41,7 +41,16 @@ final class BoxWindowManager {
                 let session = DragSession.shared
                 defer { session.finish() }
                 guard !session.handled else { return }
-                guard !self.containsScreenPoint(NSEvent.mouseLocation) else { return }
+
+                guard !self.containsScreenPoint(NSEvent.mouseLocation) else {
+                    // 没落到任何整理框、但指针还在某个框里（比如用户按 Esc 取消了拖拽）。
+                    // 拖拽开始时我们把文件恢复显示了，这里必须把「在框里就隐藏」这个
+                    // 不变量补回来，否则文件会一直保持可见、hiddenPaths 里也没记录了。
+                    Commands.rehideAfterDrop(payload.itemIDs, in: payload.boxID)
+                    self.refreshAll()
+                    OperationsLog.append("拖拽取消（未落框），已恢复原位置隐藏: \(payload.itemIDs.count) 个")
+                    return
+                }
                 // 从框里摘掉即可 —— 文件在拖拽开始时就已恢复显示，
                 // 若被访达移进了别的目录，它现在是可见的，不需要我们再动。
                 let paths = payload.itemIDs.compactMap { id in

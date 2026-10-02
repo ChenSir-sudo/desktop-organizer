@@ -152,6 +152,11 @@ struct BoxConfig: Codable, Identifiable, Equatable {
         let app = Bundle.main.bundleURL.standardizedFileURL.path
         if target == app || app.hasPrefix(target + "/") { return true }
         if target == AppPaths.desktopDirectory.standardizedFileURL.path { return true }
+        // 程序自己的配置目录 —— 里面存着用户的整理框，绝不能被搬走
+        let support = AppPaths.supportDirectory.standardizedFileURL.path
+        if target == support || support.hasPrefix(target + "/") { return true }
+        // 用户主目录本身
+        if target == NSHomeDirectory() { return true }
         return false
     }
 }
@@ -246,6 +251,10 @@ final class Store: ObservableObject {
     /// 防抖就会真的把测试用的临时状态写进用户的真实配置。
     var persistenceSuppressed = false
 
+    /// 配置读取失败时置位。置位后**禁止任何写盘** —— 内存里是空状态，
+    /// 写下去就等于把用户仅存的那份配置毁掉。
+    private(set) var loadFailed = false
+
     private var saveWorkItem: DispatchWorkItem?
     private var isLoading = false
 
@@ -263,8 +272,23 @@ final class Store: ObservableObject {
               let config = try? JSONDecoder().decode(AppConfig.self, from: data) else {
             if hadConfig {
                 // 文件在、但读不出来。**绝对不要**这时候把空配置写回去 ——
-                // 那等于把用户仅存的一份配置也毁掉。保留原文件，留给用户自救。
-                OperationsLog.append("配置读取失败，已保留原文件、不做任何覆盖")
+                // 那等于把用户仅存的一份配置也毁掉。
+                //
+                // 但仅仅「这次不写」还不够：内存里已经是空状态，之后任何一次
+                // save（退出时 AppDelegate 会调、安装清理写 prefs 也会调）都会把
+                // 空配置盖上去，而且解码失败时连备份都做不了。
+                // 所以这里**锁死写盘**，并额外留一份原文件副本。
+                loadFailed = true
+                if let raw = try? Data(contentsOf: AppPaths.configURL) {
+                    let stamp = ISO8601DateFormatter().string(from: Date())
+                        .replacingOccurrences(of: ":", with: "-")
+                    let keep = AppPaths.supportDirectory
+                        .appendingPathComponent("config.unreadable-\(stamp).json")
+                    try? raw.write(to: keep, options: .atomic)
+                    OperationsLog.append("配置读取失败：原文件副本已存为 \(keep.lastPathComponent)，并锁住写盘")
+                } else {
+                    OperationsLog.append("配置读取失败，已锁住写盘以免被空配置覆盖")
+                }
                 return
             }
             createStarterBoxes()
@@ -330,26 +354,60 @@ final class Store: ObservableObject {
         return changed
     }
 
-    func save() {
+    /// 写盘。返回是否真的成功 —— 调用方**必须**据此决定要不要动用户的文件
+    /// （例如：记录没落盘就绝不能去隐藏文件，否则记录丢了、文件永远隐藏）。
+    @discardableResult
+    func save() -> Bool {
         saveWorkItem?.cancel()
         saveWorkItem = nil
 
-        // 写盘之前先看盘上那份。如果它比我们要写的**框更多**，说明要么有别的实例
-        // 写过更新的内容、要么我们这份是残缺的 —— 先留一份备份，绝不无声覆盖。
-        if let existing = try? Data(contentsOf: AppPaths.configURL),
-           let onDisk = try? JSONDecoder().decode(AppConfig.self, from: existing),
-           onDisk.boxes.count > boxes.count {
-            let backup = AppPaths.supportDirectory.appendingPathComponent("config.backup.json")
-            try? existing.write(to: backup)
-            OperationsLog.append("覆盖前备份：盘上 \(onDisk.boxes.count) 个框 > 本次 \(boxes.count) 个 -> config.backup.json")
+        guard !loadFailed else {
+            OperationsLog.append("配置处于「读取失败」锁定状态，跳过写盘")
+            return false
+        }
+
+        // 写盘之前，只要盘上那份**不能安全地替换**，就先留一份带时间戳的副本。
+        // 判据：读不出来 / 框更多 / 隐藏记录更多 —— 三种都说明这次写会丢信息。
+        if let existing = try? Data(contentsOf: AppPaths.configURL) {
+            var mustBackUp = false
+            var why = ""
+            if let onDisk = try? JSONDecoder().decode(AppConfig.self, from: existing) {
+                if onDisk.boxes.count > boxes.count {
+                    mustBackUp = true
+                    why = "盘上 \(onDisk.boxes.count) 个框 > 本次 \(boxes.count) 个"
+                } else if onDisk.hiddenPaths.count > hiddenPaths.count {
+                    mustBackUp = true
+                    why = "盘上 \(onDisk.hiddenPaths.count) 条隐藏记录 > 本次 \(hiddenPaths.count) 条"
+                }
+            } else {
+                mustBackUp = true
+                why = "盘上那份读不出来"
+            }
+            if mustBackUp {
+                let stamp = ISO8601DateFormatter().string(from: Date())
+                    .replacingOccurrences(of: ":", with: "-")
+                let backup = AppPaths.supportDirectory
+                    .appendingPathComponent("config.backup-\(stamp).json")
+                try? existing.write(to: backup, options: .atomic)
+                OperationsLog.append("覆盖前备份（\(why)）-> \(backup.lastPathComponent)")
+            }
         }
 
         let config = AppConfig(version: kConfigVersion, boxes: boxes, prefs: prefs,
                                hiddenPaths: Array(hiddenPaths).sorted())
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(config) else { return }
-        try? data.write(to: AppPaths.configURL, options: .atomic)
+        guard let data = try? encoder.encode(config) else {
+            OperationsLog.append("配置编码失败，未写盘")
+            return false
+        }
+        do {
+            try data.write(to: AppPaths.configURL, options: .atomic)
+            return true
+        } catch {
+            OperationsLog.append("配置写盘失败: \(error.localizedDescription)")
+            return false
+        }
     }
 
     private func scheduleSave() {
@@ -417,6 +475,10 @@ final class Store: ObservableObject {
         var known = Set(boxes[boxIndex].items.map(\.path))
         var fresh: [BoxItem] = []
 
+        // 先只更新内存里的记录，**先不动磁盘上的文件**。
+        // 顺序很重要：如果先隐藏文件、记录却因为写盘失败而没落盘，
+        // 文件就永远隐藏且没人知道（设置页的「恢复」只认 hiddenPaths）。
+        var pendingHide: [URL] = []
         for url in urls {
             let path = url.standardizedFileURL.path
             guard !path.isEmpty, !known.contains(path), !BoxConfig.isProtected(url) else { continue }
@@ -426,20 +488,41 @@ final class Store: ObservableObject {
                 // 已经是隐藏状态：可能是我们之前隐藏的（另一个框引用过），
                 // 也可能是用户自己隐藏的。交给 hiddenPaths 去记，不在这里下结论。
                 item.didHide = hiddenPaths.contains(path)
-            } else if HiddenFlag.setHidden(true, for: url) {
+            } else {
+                // 先记账，稍后落盘成功才真正隐藏
                 item.didHide = true
                 hiddenPaths.insert(path)
+                pendingHide.append(url)
             }
             fresh.append(item)
             known.insert(path)
         }
 
         guard !fresh.isEmpty else { return 0 }
+
+        // 记录先落盘。落盘失败就撤销记录、一个文件都不隐藏 —— 宁可这次拖入无效，
+        // 也不能留下「文件被隐藏、却没有任何记录」的状态。
+        if !pendingHide.isEmpty, !save() {
+            for url in pendingHide { hiddenPaths.remove(url.standardizedFileURL.path) }
+            for index in fresh.indices { fresh[index].didHide = false }
+            OperationsLog.append("配置落盘失败，已放弃隐藏 \(pendingHide.count) 个文件（不会留下无记录的黑洞）")
+            return 0
+        }
+
         if let position {
             let at = max(0, min(position, boxes[boxIndex].items.count))
             boxes[boxIndex].items.insert(contentsOf: fresh, at: at)
         } else {
             boxes[boxIndex].items.append(contentsOf: fresh)
+        }
+
+        // 记录已经安全落盘，现在才去隐藏文件
+        for url in pendingHide {
+            if HiddenFlag.setHidden(true, for: url) {
+                OperationsLog.append("隐藏原位置: \(url.path)")
+            } else {
+                OperationsLog.append("隐藏失败（文件保持可见）: \(url.path)")
+            }
         }
         scheduleSave()
         return fresh.count
@@ -507,12 +590,19 @@ final class Store: ObservableObject {
     func moveItems(in boxID: UUID, itemIDs: [UUID], to targetIndex: Int) {
         guard let boxIndex = index(of: boxID) else { return }
         let movingIDs = Set(itemIDs)
-        let moving = boxes[boxIndex].items.filter { movingIDs.contains($0.id) }
+        let original = boxes[boxIndex].items
+        let moving = original.filter { movingIDs.contains($0.id) }
         guard !moving.isEmpty else { return }
 
+        // targetIndex 是「在**原顺序**里插到第几个之前」。先移走被拖动的项之后，
+        // 下标会前移，所以要减掉「原本排在 targetIndex 之前的被移动项数」，
+        // 否则多选向下拖会整体偏移 k 格（单个向下拖也会落到目标之后）。
+        let shiftedBefore = original.prefix(max(0, min(targetIndex, original.count)))
+            .filter { movingIDs.contains($0.id) }.count
+        let to = max(0, min(targetIndex - shiftedBefore, boxes[boxIndex].items.count - moving.count))
+
         boxes[boxIndex].items.removeAll { movingIDs.contains($0.id) }
-        let to = max(0, min(targetIndex, boxes[boxIndex].items.count))
-        boxes[boxIndex].items.insert(contentsOf: moving, at: to)
+        boxes[boxIndex].items.insert(contentsOf: moving, at: max(0, to))
         scheduleSave()
     }
 
@@ -554,11 +644,14 @@ final class Store: ObservableObject {
         guard HiddenFlag.setHidden(hidden, for: url) else { return }
         let key = url.standardizedFileURL.path
         if hidden { hiddenPaths.insert(key) } else { hiddenPaths.remove(key) }
+
         for boxIndex in boxes.indices {
-            for itemIndex in boxes[boxIndex].items.indices where boxes[boxIndex].items[itemIndex].path == path {
+            for itemIndex in boxes[boxIndex].items.indices
+            where URL(fileURLWithPath: boxes[boxIndex].items[itemIndex].path).standardizedFileURL.path == key {
                 boxes[boxIndex].items[itemIndex].didHide = hidden
             }
         }
+        OperationsLog.append("\(hidden ? "隐藏" : "恢复显示")原位置: \(url.path)")
         scheduleSave()
     }
 

@@ -36,6 +36,14 @@ final class BoxContentView: NSView, NSDraggingSource {
     /// 本框的 ID。
     var boxID: UUID?
 
+    /// SwiftUI 宿主视图。**没落在条目格子上的左键事件必须转发给它** ——
+    /// 否则上栏的 ＋/设置/✕ 按钮、拖动与缩放手势、双击改名、框内设置页
+    /// 全都会被这一层吃掉、彻底点不动（这个 bug 真的犯过一次）。
+    weak var eventForwarder: NSView?
+
+    /// 当前这次按下是否已经转发给宿主视图（拖动/抬起要跟着走同一条路）。
+    private var forwardingToHost = false
+
     // MARK: 几何
 
     /// 各条目格子的几何（由 SwiftUI 侧上报）。
@@ -83,11 +91,15 @@ final class BoxContentView: NSView, NSDraggingSource {
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         guard let hit = tile(at: point) else {
-            // 点在空白处：清空选择（原来由 SwiftUI 那边负责，现在整窗接管了）
+            // 没落在格子上：清空选择，然后把事件**原样转发**给 SwiftUI，
+            // 让它照常处理上栏按钮、拖动/缩放、双击改名、设置页。
+            forwardingToHost = true
             onClearSelection?()
+            eventForwarder?.mouseDown(with: event)
             return
         }
 
+        forwardingToHost = false
         if event.clickCount == 2 {
             onOpenItem?(hit.id)
             return
@@ -99,6 +111,10 @@ final class BoxContentView: NSView, NSDraggingSource {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if forwardingToHost {
+            eventForwarder?.mouseDragged(with: event)
+            return
+        }
         guard !didStartDrag, let start = pressPoint, let anchor = pressedTileID else { return }
         let point = convert(event.locationInWindow, from: nil)
         guard hypot(point.x - start.x, point.y - start.y) > 4 else { return }
@@ -107,6 +123,11 @@ final class BoxContentView: NSView, NSDraggingSource {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if forwardingToHost {
+            forwardingToHost = false
+            eventForwarder?.mouseUp(with: event)
+            return
+        }
         pressPoint = nil
         pressedTileID = nil
         didStartDrag = false
@@ -150,19 +171,19 @@ final class BoxContentView: NSView, NSDraggingSource {
     ///
     /// 应用内：move（框内重排 / 跨框转移，只改引用，不动文件）。
     ///
-    /// 应用外：**默认拒绝**。这一点非常重要 —— 载荷里带了文件的 `public.file-url`，
-    /// 一旦放行，拖拽只要落在整理框之外（手滑没对准目标框、落在访达窗口里、
-    /// 落在别的宗卷的窗口里），系统就会把这次拖拽交给访达，**由访达真的搬走文件**。
-    /// 而跨宗卷搬移是「复制 + 删除」，源文件不进废纸篓、无法恢复。
-    /// 宁可什么都不做，也不能让用户的文件在我们不知情的情况下被搬走。
+    /// 应用外：**默认拒绝**；即使用户按住 ⌥ 放行，也只给 `.copy`，**永远不给 `.move`**。
     ///
-    /// 确实要交给访达搬进某个目录时：按住 ⌥ 再拖（明确意图）。
+    /// 为什么这么严：载荷里带着文件的 `public.file-url`，一旦允许 `.move`，
+    /// 文件能不能安全搬走就完全交给第三方了 —— 跨宗卷时访达就是「复制 + 删除」，
+    /// 源文件不进废纸篓、无法恢复。这正是之前丢文件的那一类路径。
+    /// 只给 `.copy`：最坏情况是目标位置多一份副本，**源文件永远在**。
     func draggingSession(_ session: NSDraggingSession,
                          sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
         guard context == .withinApplication else {
             let allow = NSEvent.modifierFlags.contains(.option)
             if allow { DragSession.shared.outsideAllowed = true }
-            return allow ? [.move, .copy] : []
+            // 只给 copy —— 源文件不可能被删
+            return allow ? .copy : []
         }
         return .move
     }
@@ -191,6 +212,8 @@ final class BoxContentView: NSView, NSDraggingSource {
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        // 注意：这个方法每个鼠标移动事件都会被调用，不要在这里写日志
+        // （log() 会读+原子重写整份文件，放在这里等于拖拽期间持续做磁盘 I/O）。
         let op = acceptedOperation(sender)
         let point = convert(sender.draggingLocation, from: nil)
         onFolderTargetChanged?(folderTile(at: point)?.id)

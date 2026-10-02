@@ -296,14 +296,40 @@ enum HeadlessTools {
         }
         let orderAfter = Store.shared.box(id: box.id)?.items.map(\.name) ?? []
 
-        check("重排把首项挪到了第 3 位", orderAfter.count == orderBefore.count && orderAfter[2] == orderBefore[0])
+        // 语义：拖到「原第 3 项」的位置 = 插到那一项**之前**。
+        // [A,B,C,…] 把 A 拖到 C 的位置 -> [B,A,C,…]
+        check("单个重排插到目标项之前",
+              orderAfter.count == orderBefore.count
+              && orderAfter[0] == orderBefore[1]
+              && orderAfter[1] == orderBefore[0]
+              && orderAfter[2] == orderBefore[2])
         check("重排没有丢条目", Set(orderAfter) == Set(orderBefore))
 
-        // 多选批量重排：一次挪动两项
+        // 多选**向下**拖：这是之前偏移 k 格的那个 bug。
+        // [A,B,C,D,E] 选中 [A,B] 拖到 D(下标 3) 的位置 -> 期望 [C,A,B,D,E]
+        let before = Store.shared.box(id: box.id)?.items.map(\.name) ?? []
         let batchIDs = Array((Store.shared.box(id: box.id)?.items ?? []).prefix(2).map(\.id))
-        Store.shared.moveItems(in: box.id, itemIDs: batchIDs, to: 0)
-        let batchAfter = Store.shared.box(id: box.id)?.items.prefix(2).map(\.id) ?? []
-        check("批量重排把两项一起挪到了最前", Array(batchAfter) == batchIDs.map { $0 })
+        Store.shared.moveItems(in: box.id, itemIDs: batchIDs, to: 3)
+        let after = Store.shared.box(id: box.id)?.items.map(\.name) ?? []
+        check("多选向下拖不偏移（插到目标项之前）",
+              after.count == before.count
+              && after[0] == before[2]
+              && after[1] == before[0]
+              && after[2] == before[1]
+              && after[3] == before[3])
+        check("多选重排没有丢条目", Set(after) == Set(before))
+
+        // 多选**向上**拖
+        let upBefore = Store.shared.box(id: box.id)?.items.map(\.name) ?? []
+        let upIDs = Array((Store.shared.box(id: box.id)?.items ?? []).suffix(2).map(\.id))
+        Store.shared.moveItems(in: box.id, itemIDs: upIDs, to: 1)
+        let upAfter = Store.shared.box(id: box.id)?.items.map(\.name) ?? []
+        check("多选向上拖插到目标项之前",
+              upAfter.count == upBefore.count
+              && upAfter[0] == upBefore[0]
+              && upAfter[1] == upBefore[upBefore.count - 2]
+              && upAfter[2] == upBefore[upBefore.count - 1])
+        check("多选向上拖没有丢条目", Set(upAfter) == Set(upBefore))
 
         let targetBox = Store.shared.addBox(name: "__selftest_target__")
         if let moveID = Store.shared.box(id: box.id)?.items.first?.id {
@@ -343,7 +369,7 @@ enum HeadlessTools {
         // 同名冲突不覆盖
         try? "y".write(to: loose, atomically: true, encoding: .utf8)
         let again = FileActions.move([loose], into: inbox)
-        check("同名时不覆盖，自动改名", again.moved.first?.lastPathComponent == "待归档 2.txt")
+        check("同名时不覆盖，自动改名", again.moved.first?.to.lastPathComponent == "待归档 2.txt")
 
         // 不能把文件夹移进它自己
         let selfMove = FileActions.move([inbox], into: inbox.appendingPathComponent("子目录", isDirectory: true))

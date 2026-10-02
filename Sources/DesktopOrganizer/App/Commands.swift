@@ -108,8 +108,16 @@ enum Commands {
         let targets = box.items.filter { itemIDs.contains($0.id) }
         guard !targets.isEmpty else { return }
 
-        Store.shared.removeItems(Set(targets.map(\.id)), from: boxID)
+        // **先搬，再按结果摘条目。** 反过来会在搬移失败时白白丢掉条目
+        // （文件没搬走，条目却没了，用户看到的是"东西消失了"）。
         let outcome = FileActions.move(targets.map(\.url), into: folder)
+        let succeeded = Set(outcome.moved.map { $0.from.standardizedFileURL.path })
+        let removeIDs = targets
+            .filter { succeeded.contains($0.url.standardizedFileURL.path) }
+            .map(\.id)
+        if !removeIDs.isEmpty {
+            Store.shared.removeItems(Set(removeIDs), from: boxID)
+        }
 
         BoxWindowManager.shared.refresh(boxID: boxID)
         BoxWindowManager.shared.refreshAll()

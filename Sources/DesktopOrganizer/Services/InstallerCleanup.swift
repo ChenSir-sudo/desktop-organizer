@@ -84,9 +84,15 @@ enum InstallerCleanup {
         let home = URL(fileURLWithPath: NSHomeDirectory())
         let searchDirs = ["Downloads", "Desktop"].map { home.appendingPathComponent($0) }
 
-        // 程序自己的创建时间：比它新的安装包不动，避免误删刚下载的新版
-        let appCreated = try? Bundle.main.bundleURL
-            .resourceValues(forKeys: [.creationDateKey]).creationDate
+        // 程序自己的创建时间：比它新的安装包不动，避免误删刚下载的新版。
+        // **读不到就整体放弃清理** —— 之前写成 `let appCreated`，nil 时下面的
+        // 判断整体失效、不再跳过新安装包，等于把 Downloads/Desktop 里所有
+        // 名字像安装包的 dmg 全丢进废纸篓。
+        guard let appCreated = try? Bundle.main.bundleURL
+            .resourceValues(forKeys: [.creationDateKey]).creationDate else {
+            OperationsLog.append("读不到程序创建时间，放弃安装包清理（宁可留下，也不误删）")
+            return 0
+        }
 
         var removed = 0
         for dir in searchDirs {
@@ -94,7 +100,7 @@ enum InstallerCleanup {
             for name in names where name.lowercased().hasSuffix(".dmg") && isOurs(name) {
                 let url = dir.appendingPathComponent(name)
                 if let created = try? url.resourceValues(forKeys: [.creationDateKey]).creationDate,
-                   let appCreated, created > appCreated {
+                   created > appCreated {
                     continue
                 }
                 OperationsLog.append("安装包清理，移到废纸篓: \(url.path)")
@@ -106,8 +112,9 @@ enum InstallerCleanup {
         return removed
     }
 
+    /// 只认**以我们程序名开头**的安装包，而不是"名字里含这几个字"。
     private static func isOurs(_ filename: String) -> Bool {
-        let lower = filename.lowercased()
-        return lower.contains("桌面整理") || lower.contains("desktoporganizer")
+        let stem = ((filename as NSString).deletingPathExtension).lowercased()
+        return stem.hasPrefix("桌面整理") || stem.hasPrefix("desktoporganizer")
     }
 }
