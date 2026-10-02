@@ -40,6 +40,8 @@ struct BoxView: View {
     let actions: BoxActions
 
     @State private var isEditingName = false
+    /// 进入编辑前的名字，Esc 撤销时用
+    @State private var nameBeforeEditing = ""
     @State private var nameDraft = ""
     @FocusState private var nameFocused: Bool
 
@@ -164,6 +166,21 @@ struct BoxView: View {
                 .focused($nameFocused)
                 .onSubmit(commitName)
                 .onExitCommand { cancelName() }
+                // 边打字边存。之前只有回车才提交，用户输入完点别处（没按回车）时
+                // Store 里还是旧名字，而输入框一直显示新名字、看起来已经改好了，
+                // 重启（比如装新版本）就变回旧名字。
+                .onChange(of: nameDraft) { _, newValue in
+                    let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { return }
+                    store.update(id: boxID) { $0.name = trimmed }
+                }
+                // 失焦也算改完（点别的框 / 切到别的应用 / 点桌面）
+                .onChange(of: nameFocused) { _, focused in
+                    if !focused && isEditingName { commitName() }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
+                    if isEditingName { commitName() }
+                }
                 .frame(maxWidth: 150)
         } else {
             Text(box.name)
@@ -314,21 +331,25 @@ struct BoxView: View {
     // MARK: 改名
 
     private func beginEditingName() {
+        nameBeforeEditing = box.name
         nameDraft = box.name
         isEditingName = true
         DispatchQueue.main.async { nameFocused = true }
     }
 
+    /// 结束编辑。名字在打字时就已经存进去了，这里只负责收尾和兜底。
     private func commitName() {
         let trimmed = nameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            store.update(id: boxID) { $0.name = trimmed }
-        }
+        // 空名字不接受，恢复编辑前的
+        store.update(id: boxID) { $0.name = trimmed.isEmpty ? nameBeforeEditing : trimmed }
         isEditingName = false
         nameFocused = false
     }
 
+    /// Esc：真的撤销回编辑前的名字（因为打字时已经写进 Store 了）。
     private func cancelName() {
+        store.update(id: boxID) { $0.name = nameBeforeEditing }
+        nameDraft = nameBeforeEditing
         isEditingName = false
         nameFocused = false
     }
