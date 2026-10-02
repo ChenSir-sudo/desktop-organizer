@@ -10,6 +10,15 @@ enum Diagnostics {
         guard let path = ProcessInfo.processInfo.environment["DO_DIAG"] else { return }
         let environment = ProcessInfo.processInfo.environment
 
+        // 把指定路径加进第一个整理框，用来端到端验证「原位置隐藏」
+        if let addPath = environment["DO_DIAG_ADD"], let first = Store.shared.boxes.first {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                let n = Store.shared.addItems([URL(fileURLWithPath: addPath)], to: first.id)
+                try? "added=\(n) hidden=\(HiddenFlag.isHidden(URL(fileURLWithPath: addPath)))"
+                    .write(toFile: path + ".add", atomically: true, encoding: .utf8)
+            }
+        }
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
             var output = snapshot("初始状态")
 

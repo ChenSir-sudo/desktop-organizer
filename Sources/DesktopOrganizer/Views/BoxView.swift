@@ -178,7 +178,7 @@ struct BoxView: View {
     /// 右上角操作区：平时隐藏，鼠标移到上栏右侧才出现。
     private var actionArea: some View {
         HStack(spacing: 2) {
-            iconButton("plus", help: "添加文件（只做引用，不移动）") { actions.addFiles() }
+            iconButton("plus", help: "添加文件") { actions.addFiles() }
             iconButton("slider.horizontal.3", help: "设置") {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
                     ui.page = .settings
@@ -231,12 +231,8 @@ struct BoxView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 10)
+                .padding(.bottom, 4)
                 .animation(.spring(response: 0.32, dampingFraction: 0.82), value: model.items)
-
-                Text("共 \(model.items.count) 项 · 文件都在原位置，这里只是引用")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .padding(.bottom, 10)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -248,9 +244,6 @@ struct BoxView: View {
                 .font(.system(size: 22, weight: .light))
             Text("把文件拖到这里")
                 .font(.system(size: 12, weight: .medium))
-            Text("只做归类，不会移动文件")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
         }
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

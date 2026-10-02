@@ -68,7 +68,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         let count = box.items.count
         let message = count == 0
             ? "框里没有条目。"
-            : "框里的 \(count) 个条目只是引用，磁盘上的文件不会受到任何影响。"
+            : "框内 \(count) 个文件会恢复显示。"
         guard FileActions.confirm(
             title: "删除整理框「\(box.name)」？",
             message: message,

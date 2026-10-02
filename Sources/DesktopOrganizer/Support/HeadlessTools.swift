@@ -71,6 +71,38 @@ enum HeadlessTools {
         print(failures == 0 ? "吸附自检全部通过 ✓" : "吸附自检有 \(failures) 项失败")
     }
 
+    /// 单独验证隐藏标志的两个方向，排除其它逻辑干扰。
+    static func hideTest() {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent(".cache/hidetest")
+        try? fm.removeItem(at: root)
+        try? fm.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("样本 测试.txt")
+        try? "x".write(to: file, atomically: true, encoding: .utf8)
+
+        print("初始 isHidden = \(HiddenFlag.isHidden(file))")
+
+        let r1 = HiddenFlag.setHidden(true, for: file)
+        print("setHidden(true)  返回 \(r1)   isHidden = \(HiddenFlag.isHidden(file))")
+
+        let r2 = HiddenFlag.setHidden(false, for: file)
+        print("setHidden(false) 返回 \(r2)   isHidden = \(HiddenFlag.isHidden(file))")
+
+        // 直接看 BSD 标志，绕开 Foundation
+        func flags() -> String {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/stat")
+            p.arguments = ["-f", "%Sf", file.path]
+            let pipe = Pipe(); p.standardOutput = pipe
+            try? p.run(); p.waitUntilExit()
+            return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "?"
+        }
+        print("stat 标志位: \(flags())")
+
+        try? fm.removeItem(at: root)
+    }
+
     static func scan() {
         Store.shared.load()
         let groups = DeskCategorizer.scanDesktop()
@@ -145,7 +177,29 @@ enum HeadlessTools {
         let protected = Store.shared.addItems([Bundle.main.bundleURL], to: box.id)
         print("  尝试把程序自身加进框: 新增 \(protected)（应为 0）")
 
+        // 关键新语义：进框 -> 原位置隐藏；出框 -> 原位置恢复
+        print("")
+        print("== 原位置隐藏 / 恢复 ==")
+        let target = sampleDir.appendingPathComponent("照片.png")
+        print("  加框后 隐藏标志: \(HiddenFlag.isHidden(target))（应为 true）")
+        print("  路径是否不变: \(target.path)")
+        print("  文件是否仍可按原路径读取: \(FileManager.default.fileExists(atPath: target.path))")
+
+        let itemID = Store.shared.box(id: box.id)?.items.first(where: { $0.path == target.path })?.id
+        if let itemID {
+            Store.shared.removeItems([itemID], from: box.id)
+            print("  从框中移除后 隐藏标志: \(HiddenFlag.isHidden(target))（应为 false）")
+        } else {
+            print("  !! 找不到刚加入的条目")
+        }
+
+        // 删框要把剩下的全部恢复显示
         Store.shared.removeBox(id: box.id)
+        var leftoverHidden = 0
+        for url in urls where HiddenFlag.isHidden(url) { leftoverHidden += 1 }
+        print("  删除整理框后仍被隐藏的数量: \(leftoverHidden)（应为 0）")
+
+
         try? fm.removeItem(at: root)
         print("")
         print("自检结束")

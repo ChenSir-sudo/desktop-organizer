@@ -48,6 +48,9 @@ struct BoxItem: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var path: String
     var addedAt: Date = Date()
+    /// 是不是「我们」把它从原位置隐藏起来的。
+    /// 只恢复自己动过的文件，绝不碰用户手动隐藏的东西。
+    var didHide: Bool = false
 
     init(path: String) {
         self.path = path
@@ -61,6 +64,7 @@ struct BoxItem: Codable, Identifiable, Equatable {
         id = value(.id, UUID())
         path = value(.path, "")
         addedAt = value(.addedAt, Date())
+        didHide = value(.didHide, false)
     }
 
     var url: URL { URL(fileURLWithPath: path) }
@@ -298,11 +302,15 @@ final class Store: ObservableObject {
     }
 
     func removeBox(id: UUID) {
-        boxes.removeAll { $0.id == id }
+        guard let index = index(of: id) else { return }
+        let removed = boxes[index].items
+        boxes.remove(at: index)
+        restoreVisibility(of: removed)
         scheduleSave()
     }
 
-    /// 往框里加引用。已存在或受保护的路径会跳过，返回真正新增的数量。
+    /// 往框里加条目。进框的同时把原位置隐藏起来（路径不变）。
+    /// 已在框内或受保护的路径会跳过，返回真正新增的数量。
     @discardableResult
     func addItems(_ urls: [URL], to id: UUID) -> Int {
         guard let index = index(of: id) else { return 0 }
@@ -311,7 +319,13 @@ final class Store: ObservableObject {
         for url in urls {
             let path = url.standardizedFileURL.path
             guard !path.isEmpty, !known.contains(path), !BoxConfig.isProtected(url) else { continue }
-            boxes[index].items.append(BoxItem(path: path))
+
+            var item = BoxItem(path: path)
+            // 已经是隐藏状态的话不认领（可能是用户自己隐藏的，或者是别的框隐藏的）
+            if !HiddenFlag.isHidden(url) {
+                item.didHide = HiddenFlag.setHidden(true, for: url)
+            }
+            boxes[index].items.append(item)
             known.insert(path)
             added += 1
         }
@@ -322,15 +336,53 @@ final class Store: ObservableObject {
     @discardableResult
     func removeItems(_ itemIDs: Set<UUID>, from id: UUID) -> Int {
         guard let index = index(of: id) else { return 0 }
-        let before = boxes[index].items.count
+        let removed = boxes[index].items.filter { itemIDs.contains($0.id) }
+        guard !removed.isEmpty else { return 0 }
         boxes[index].items.removeAll { itemIDs.contains($0.id) }
-        let removed = before - boxes[index].items.count
-        if removed > 0 { scheduleSave() }
-        return removed
+        restoreVisibility(of: removed)
+        scheduleSave()
+        return removed.count
     }
 
     func removeAllItems(from id: UUID) {
-        update(id: id) { $0.items.removeAll() }
+        guard let index = index(of: id) else { return }
+        let removed = boxes[index].items
+        guard !removed.isEmpty else { return }
+        boxes[index].items.removeAll()
+        restoreVisibility(of: removed)
+        scheduleSave()
+    }
+
+    /// 恢复原位置显示。只处理我们隐藏过的，且只有当没有任何整理框还引用它时才恢复。
+    private func restoreVisibility(of items: [BoxItem]) {
+        for item in items where item.didHide {
+            let stillReferenced = boxes.contains { box in
+                box.items.contains { $0.path == item.path }
+            }
+            if !stillReferenced {
+                HiddenFlag.setHidden(false, for: item.url)
+            }
+        }
+    }
+
+    /// 兜底：把本程序隐藏过的文件全部恢复显示。
+    @discardableResult
+    func restoreAllHidden() -> Int {
+        var count = 0
+        for index in boxes.indices {
+            for itemIndex in boxes[index].items.indices where boxes[index].items[itemIndex].didHide {
+                if HiddenFlag.setHidden(false, for: boxes[index].items[itemIndex].url) { count += 1 }
+                boxes[index].items[itemIndex].didHide = false
+            }
+        }
+        if count > 0 { scheduleSave() }
+        return count
+    }
+
+    var hiddenItemCount: Int {
+        boxes.reduce(0) { total, box in
+            total + box.items.filter(\.didHide).count
+        }
     }
 
     // MARK: 首次启动

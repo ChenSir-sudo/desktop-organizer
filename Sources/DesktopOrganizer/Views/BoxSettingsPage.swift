@@ -23,7 +23,7 @@ struct BoxSettingsPage: View {
             Rectangle().fill(Color.primary.opacity(0.10)).frame(height: 1)
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 11) {
-                    nameRow
+                    nameRow.help("双击上栏标题可以改名")
                     row("背景") { materialPicker }
                     row("透明度") { opacitySlider }
                     row("圆角") { cornerSlider }
@@ -75,15 +75,10 @@ struct BoxSettingsPage: View {
     private var nameRow: some View {
         HStack(spacing: 8) {
             label("名字")
-            VStack(alignment: .leading, spacing: 1) {
-                Text(box.name)
-                    .font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text("双击上栏标题改名")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.tertiary)
-            }
+            Text(box.name)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
             Spacer(minLength: 0)
         }
     }
@@ -170,7 +165,7 @@ struct BoxSettingsPage: View {
         Button {
             actions.clearItems()
         } label: {
-            Text("清空框内条目（不动文件）")
+            Text("清空框内条目")
                 .font(.system(size: 11.5))
                 .frame(maxWidth: .infinity)
         }

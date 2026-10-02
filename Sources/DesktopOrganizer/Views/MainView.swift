@@ -58,7 +58,7 @@ struct MainView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("桌面整理")
                     .font(.system(size: 15, weight: .semibold))
-                Text("\(store.boxes.count) 个整理框 · 文件始终留在原位置")
+                Text("\(store.boxes.count) 个整理框")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
             }
@@ -117,9 +117,6 @@ struct MainView: View {
                         .foregroundStyle(.tertiary)
                     Text("还没有整理框")
                         .font(.system(size: 13, weight: .medium))
-                    Text("新建一个，然后把文件拖进去归类")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
                     Button("新建整理框", action: onNewBox)
                         .controlSize(.regular)
                         .padding(.top, 4)

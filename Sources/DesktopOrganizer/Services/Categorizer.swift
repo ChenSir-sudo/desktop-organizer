@@ -125,7 +125,6 @@ enum DeskCategorizer {
 
         var summary = "已把 \(outcome.addedItems) 项收进整理框\n\n"
         summary += outcome.lines.joined(separator: "\n")
-        summary += "\n\n文件没有被移动，只是被整理框引用了。"
         outcome.summary = summary
         return outcome
     }

@@ -249,7 +249,7 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
 
     private func presentAddPanel() {
         let urls = FileActions.pickFiles(
-            message: "选择要收进「\(box.name)」的内容（不会移动文件）",
+            message: "选择要收进「\(box.name)」的内容",
             startingAt: nil
         )
         guard !urls.isEmpty else { return }
@@ -267,7 +267,7 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         guard count > 0 else { return }
         guard FileActions.confirm(
             title: "清空「\(box.name)」里的 \(count) 个条目？",
-            message: "只是从整理框里移除引用，磁盘上的文件不会受到任何影响。",
+            message: "移除后这些文件会恢复显示。",
             confirmTitle: "清空"
         ) else { return }
         withAnimation { itemsModel.removeAll() }
@@ -276,7 +276,7 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
     private func confirmTrash(_ url: URL) {
         guard FileActions.confirm(
             title: "把「\(url.lastPathComponent)」移到废纸篓？",
-            message: "这是整个程序里唯一会动文件的操作。可以从废纸篓恢复。",
+            message: "可以从废纸篓恢复。",
             confirmTitle: "移到废纸篓"
         ) else { return }
         if FileActions.moveToTrash(url) {
@@ -288,7 +288,7 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         let count = itemsModel.items.count
         let message = count == 0
             ? "框里没有条目。"
-            : "框里的 \(count) 个条目只是引用，磁盘上的文件不会受到任何影响。"
+            : "框内 \(count) 个文件会恢复显示。"
         guard FileActions.confirm(
             title: "删除整理框「\(box.name)」？",
             message: message,

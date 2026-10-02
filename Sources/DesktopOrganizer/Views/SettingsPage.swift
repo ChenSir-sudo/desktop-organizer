@@ -18,10 +18,7 @@ struct SettingsPage: View {
     var body: some View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 18) {
-                section("新建整理框") {
-                    Text("整理框只是「引用集合」，文件永远留在原来的位置。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                section("整理框") {
                     Button(action: onNewBox) {
                         HStack(spacing: 5) {
                             Image(systemName: "plus").font(.system(size: 11, weight: .bold))
@@ -73,9 +70,6 @@ struct SettingsPage: View {
                 Divider()
 
                 section("桌面归类") {
-                    Text("扫描桌面并按类型建立整理框。文件不会被移动，只是被引用。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
                     Toggle(isOn: binding(\.confirmBeforeCategorize)) {
                         Text("执行前先确认").font(.system(size: 11.5))
                     }
@@ -102,17 +96,20 @@ struct SettingsPage: View {
                     .controlSize(.mini)
                 }
 
-                Divider()
-
-                section("关于") {
-                    Text("整理框只记录文件位置，不会移动、改名或删除你的文件。整个程序里唯一会动文件的地方是条目右键菜单里的「移到废纸篓」，且每次都会二次确认。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("如果整理框显示「已失效」，说明那个文件被移动或删除了 —— 引用不会自动跟踪，右键移除即可。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                if store.hiddenItemCount > 0 {
+                    Divider()
+                    section("已隐藏的原文件") {
+                        Button {
+                            let n = Store.shared.restoreAllHidden()
+                            if n > 0 {
+                                FileActions.info(title: "已恢复", message: "\(n) 个文件恢复显示。")
+                            }
+                        } label: {
+                            Text("恢复 \(store.hiddenItemCount) 个原文件的显示")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .controlSize(.regular)
+                    }
                 }
             }
             .padding(22)
