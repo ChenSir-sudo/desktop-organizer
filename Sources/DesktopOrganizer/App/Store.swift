@@ -258,48 +258,68 @@ final class Store: ObservableObject {
         defer { isLoading = false }
 
         let hadConfig = FileManager.default.fileExists(atPath: AppPaths.configURL.path)
-        if let data = try? Data(contentsOf: AppPaths.configURL),
-           let config = try? JSONDecoder().decode(AppConfig.self, from: data) {
-            boxes = config.boxes
-            prefs = config.prefs
-            hiddenPaths = Set(config.hiddenPaths)
-            migrateLegacyFolders()
-            migrateHiddenPaths()
-            migrateToDesktopLayer(from: config.version)
+
+        guard let data = try? Data(contentsOf: AppPaths.configURL),
+              let config = try? JSONDecoder().decode(AppConfig.self, from: data) else {
+            if hadConfig {
+                // 文件在、但读不出来。**绝对不要**这时候把空配置写回去 ——
+                // 那等于把用户仅存的一份配置也毁掉。保留原文件，留给用户自救。
+                OperationsLog.append("配置读取失败，已保留原文件、不做任何覆盖")
+                return
+            }
+            createStarterBoxes()
+            return
         }
 
-        if boxes.isEmpty && !hadConfig {
-            createStarterBoxes()
+        boxes = config.boxes
+        prefs = config.prefs
+        hiddenPaths = Set(config.hiddenPaths)
+
+        // 只有迁移真的改动了内容才需要写回。之前这里无条件 save()，
+        // 一旦内存里是空状态（比如刚被清空的配置），就会把空配置永久写死。
+        var changed = migrateLegacyFolders()
+        changed = migrateHiddenPaths() || changed
+        changed = migrateToDesktopLayer(from: config.version) || changed
+        if changed {
+            save()
         }
-        save()
     }
 
     /// 老配置只有条目级的 didHide。把它汇总成 hiddenPaths，之后由 hiddenPaths 说了算。
-    private func migrateHiddenPaths() {
-        guard hiddenPaths.isEmpty else { return }
+    @discardableResult
+    private func migrateHiddenPaths() -> Bool {
+        guard hiddenPaths.isEmpty else { return false }
+        var changed = false
         for box in boxes {
             for item in box.items where item.didHide {
                 hiddenPaths.insert(item.path)
+                changed = true
             }
         }
+        return changed
     }
 
     /// v3 起整理框默认贴在桌面层（在应用窗口下面），而不是浮在所有窗口之上。
     /// 老配置里的窗口一次性落到桌面层，用户可以逐个再打开置顶。
-    private func migrateToDesktopLayer(from version: Int) {
-        guard version < kConfigVersion else { return }
+    @discardableResult
+    private func migrateToDesktopLayer(from version: Int) -> Bool {
+        guard version < kConfigVersion else { return false }
         for index in boxes.indices {
             boxes[index].floatOnTop = false
         }
         prefs.defaultFloatOnTop = false
+        return true
     }
 
     /// 1.0 的整理框绑定「搬移目标文件夹」。升级后把该文件夹里已有的内容导入成**引用**，
     /// 只读不改，一次性完成；之后这个字段彻底弃用，程序再也不会移动任何文件。
-    private func migrateLegacyFolders() {
+    @discardableResult
+    private func migrateLegacyFolders() -> Bool {
+        var changed = false
         for index in boxes.indices {
             guard let folderPath = boxes[index].legacyFolderPath, !folderPath.isEmpty else { continue }
             boxes[index].legacyFolderPath = nil
+            changed = true
             guard boxes[index].items.isEmpty else { continue }
             let folder = URL(fileURLWithPath: folderPath)
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { continue }
@@ -307,11 +327,23 @@ final class Store: ObservableObject {
                 boxes[index].items.append(BoxItem(path: folder.appendingPathComponent(name).path))
             }
         }
+        return changed
     }
 
     func save() {
         saveWorkItem?.cancel()
         saveWorkItem = nil
+
+        // 写盘之前先看盘上那份。如果它比我们要写的**框更多**，说明要么有别的实例
+        // 写过更新的内容、要么我们这份是残缺的 —— 先留一份备份，绝不无声覆盖。
+        if let existing = try? Data(contentsOf: AppPaths.configURL),
+           let onDisk = try? JSONDecoder().decode(AppConfig.self, from: existing),
+           onDisk.boxes.count > boxes.count {
+            let backup = AppPaths.supportDirectory.appendingPathComponent("config.backup.json")
+            try? existing.write(to: backup)
+            OperationsLog.append("覆盖前备份：盘上 \(onDisk.boxes.count) 个框 > 本次 \(boxes.count) 个 -> config.backup.json")
+        }
+
         let config = AppConfig(version: kConfigVersion, boxes: boxes, prefs: prefs,
                                hiddenPaths: Array(hiddenPaths).sorted())
         let encoder = JSONEncoder()
