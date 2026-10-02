@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// 无边框、可浮动的整理框面板。
@@ -14,8 +15,47 @@ final class BoxWindowManager {
     private var controllers: [UUID: BoxWindowController] = [:]
     private var hiddenIDs = Set<UUID>()
     private let guideOverlay = GuideOverlayWindow()
+    private var cancellables = Set<AnyCancellable>()
+    private var dragOutMonitor: Any?
 
-    private init() {}
+    private init() {
+        // 拖到任何整理框之外松手 = 把它从框里拿出来（原文件恢复显示）
+        DragSession.shared.$payload
+            .compactMap { $0 }
+            .sink { [weak self] payload in self?.armDragOutWatch(payload) }
+            .store(in: &cancellables)
+    }
+
+    private func armDragOutWatch(_ payload: DragPayload) {
+        disarmDragOutWatch()
+        dragOutMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
+            guard let self else { return event }
+            self.disarmDragOutWatch()
+            // 让 DropDelegate / onDrop 先把「被接住」的状态写完
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                let session = DragSession.shared
+                defer { session.finish() }
+                guard !session.handled else { return }
+                let location = NSEvent.mouseLocation
+                guard !self.containsScreenPoint(location) else { return }
+                Store.shared.removeItems([payload.itemID], from: payload.boxID)
+                self.refreshAll()
+            }
+            return event
+        }
+    }
+
+    private func disarmDragOutWatch() {
+        if let dragOutMonitor {
+            NSEvent.removeMonitor(dragOutMonitor)
+            self.dragOutMonitor = nil
+        }
+    }
+
+    /// 屏幕坐标是否落在任何一个整理框窗口里。
+    func containsScreenPoint(_ point: CGPoint) -> Bool {
+        controllers.values.contains { $0.panel.isVisible && $0.panel.frame.contains(point) }
+    }
 
     var count: Int { controllers.count }
 

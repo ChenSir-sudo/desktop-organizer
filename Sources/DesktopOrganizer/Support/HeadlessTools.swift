@@ -125,6 +125,7 @@ enum HeadlessTools {
 
     /// 核心断言：往整理框里加条目之后，磁盘上的文件必须还在原处。
     static func selfTest() {
+        var failures = 0
         let fm = FileManager.default
         let root = URL(fileURLWithPath: fm.currentDirectoryPath)
             .appendingPathComponent(".cache/selftest", isDirectory: true)
@@ -193,6 +194,33 @@ enum HeadlessTools {
             print("  !! 找不到刚加入的条目")
         }
 
+        // 框内重排 + 跨框转移
+        print("")
+        print("== 重排 / 跨框转移 ==")
+        let orderBefore = Store.shared.box(id: box.id)?.items.map(\.name) ?? []
+        if let firstID = Store.shared.box(id: box.id)?.items.first?.id {
+            Store.shared.moveItem(in: box.id, itemID: firstID, to: 2)
+        }
+        let orderAfter = Store.shared.box(id: box.id)?.items.map(\.name) ?? []
+        func check(_ name: String, _ ok: Bool) {
+            if !ok { failures += 1 }
+            print("  \(ok ? "OK " : "!! ") \(name)")
+        }
+        check("重排把首项挪到了第 3 位", orderAfter.count == orderBefore.count && orderAfter[2] == orderBefore[0])
+        check("重排没有丢条目", Set(orderAfter) == Set(orderBefore))
+
+        let targetBox = Store.shared.addBox(name: "__selftest_target__")
+        if let moveID = Store.shared.box(id: box.id)?.items.first?.id {
+            let moved = Store.shared.transferItem(moveID, from: box.id, to: targetBox.id, at: 0)
+            let inTarget = Store.shared.box(id: targetBox.id)?.items.count ?? 0
+            check("跨框转移成功", moved && inTarget == 1)
+            // 转移过去之后原位置仍然应该是隐藏的（didHide 跟着条目走）
+            if let path = Store.shared.box(id: targetBox.id)?.items.first?.path {
+                check("转移后仍保持隐藏", HiddenFlag.isHidden(URL(fileURLWithPath: path)))
+            }
+        }
+        Store.shared.removeBox(id: targetBox.id)
+
         // 删框要把剩下的全部恢复显示
         Store.shared.removeBox(id: box.id)
         var leftoverHidden = 0
@@ -202,6 +230,6 @@ enum HeadlessTools {
 
         try? fm.removeItem(at: root)
         print("")
-        print("自检结束")
+        print(failures == 0 ? "自检结束：全部通过 ✓" : "自检结束：有 \(failures) 项失败 ✗")
     }
 }

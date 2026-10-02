@@ -26,6 +26,31 @@ enum FileActions {
         }
     }
 
+    /// 用已安装的代码编辑器打开。找不到就退回系统默认方式。
+    static func openInCodeEditor(_ url: URL) {
+        let candidates = ["Visual Studio Code", "Cursor", "Windsurf", "Zed", "Sublime Text"]
+        for name in candidates {
+            let appURL = URL(fileURLWithPath: "/Applications/\(name).app")
+            guard FileManager.default.fileExists(atPath: appURL.path) else { continue }
+            NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// 在终端里打开所在目录（优先 iTerm，其次系统终端）。
+    static func openInTerminal(_ url: URL) {
+        var isDirectory: ObjCBool = false
+        FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        let directory = isDirectory.boolValue ? url : url.deletingLastPathComponent()
+
+        let iTerm = URL(fileURLWithPath: "/Applications/iTerm.app")
+        let terminal = FileManager.default.fileExists(atPath: iTerm.path)
+            ? iTerm
+            : URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
+        NSWorkspace.shared.open([directory], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
+    }
+
     static func copyPath(_ url: URL) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()

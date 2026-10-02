@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// 整理框对外的动作集合，由 BoxWindowController 注入。
 struct BoxActions {
@@ -11,21 +12,25 @@ struct BoxActions {
     var addFiles: () -> Void = {}
     var deleteBox: () -> Void = {}
     var newBox: () -> Void = {}
+    /// 外部文件拖入
     var handleDrop: ([URL]) -> Void = { _ in }
 
     var openItem: (URL) -> Void = { _ in }
     var revealItem: (URL) -> Void = { _ in }
     var copyItemPath: (URL) -> Void = { _ in }
+    var openInEditor: (URL) -> Void = { _ in }
+    var openInTerminal: (URL) -> Void = { _ in }
     var removeItem: (UUID) -> Void = { _ in }
     var trashItem: (URL) -> Void = { _ in }
+    var toggleItemHidden: (UUID, Bool) -> Void = { _, _ in }
     var clearItems: () -> Void = {}
-    var relocateMissing: () -> Void = {}
 }
 
 struct BoxView: View {
     @EnvironmentObject private var store: Store
     @ObservedObject var model: BoxItemsModel
     @ObservedObject var ui: BoxUIState
+    @ObservedObject private var session = DragSession.shared
 
     let boxID: UUID
     let actions: BoxActions
@@ -67,15 +72,17 @@ struct BoxView: View {
         .overlay(alignment: .bottomTrailing) { resizeGrip }
         .shadow(color: .black.opacity(0.28), radius: 14, x: 0, y: 7)
         .animation(.easeOut(duration: 0.15), value: ui.isDropTargeted)
-        .dropDestination(for: URL.self) { urls, _ in
-            actions.handleDrop(urls)
-            return true
-        } isTargeted: { targeted in
-            withAnimation(.easeOut(duration: 0.14)) { ui.isDropTargeted = targeted }
+        .onDrop(
+            of: [DragPayload.utType, .fileURL],
+            isTargeted: Binding(
+                get: { ui.isDropTargeted },
+                set: { targeted in withAnimation(.easeOut(duration: 0.14)) { ui.isDropTargeted = targeted } }
+            )
+        ) { providers in
+            handleProviders(providers)
         }
     }
 
-    /// 只有毛玻璃/纯色一层，没有额外的浅色叠加层。
     @ViewBuilder
     private var background: some View {
         if box.material.isBlurred {
@@ -89,7 +96,33 @@ struct BoxView: View {
         }
     }
 
-    // MARK: 页面切换
+    // MARK: 落点处理
+
+    /// 卡片空白处的落点：处理「从别的框拖过来的条目」和「外部文件」。
+    /// 框内重排由每个格子的 DropDelegate 处理，不会走到这里。
+    private func handleProviders(_ providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(DragPayload.typeIdentifier) {
+                DragPayload.payload(from: provider) { payload in
+                    guard payload.boxID != boxID else { return }
+                    DragSession.shared.handled = true
+                    Store.shared.transferItem(payload.itemID, from: payload.boxID, to: boxID, at: model.items.count)
+                    model.refresh(force: true)
+                    BoxWindowManager.shared.refreshAll()
+                    DragSession.shared.finish()
+                }
+                handled = true
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                _ = provider.loadObject(ofClass: NSURL.self) { object, _ in
+                    guard let url = object as? URL else { return }
+                    DispatchQueue.main.async { actions.handleDrop([url]) }
+                }
+                handled = true
+            }
+        }
+        return handled
+    }
 
     private var pages: some View {
         ZStack {
@@ -169,7 +202,6 @@ struct BoxView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .contentShape(Rectangle())
-                // 只有双击标题才能改名，避免拖动或单击误触
                 .onTapGesture(count: 2) { beginEditingName() }
                 .help("双击改名")
         }
@@ -188,16 +220,12 @@ struct BoxView: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
-        .background(
-            Capsule().fill(Color.primary.opacity(ui.actionAreaHovered ? 0.06 : 0))
-        )
+        .background(Capsule().fill(Color.primary.opacity(ui.actionAreaHovered ? 0.06 : 0)))
         .contentShape(Rectangle())
         .opacity(ui.actionAreaHovered ? 1 : 0)
         .scaleEffect(ui.actionAreaHovered ? 1 : 0.92, anchor: .trailing)
         .animation(.easeOut(duration: 0.18), value: ui.actionAreaHovered)
-        .onHover { hovering in
-            ui.actionAreaHovered = hovering
-        }
+        .onHover { hovering in ui.actionAreaHovered = hovering }
     }
 
     private func iconButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
@@ -221,11 +249,28 @@ struct BoxView: View {
         } else {
             ScrollView(.vertical) {
                 LazyVGrid(columns: columns, spacing: 8) {
-                    ForEach(model.items) { item in
+                    ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
                         ItemTile(
                             item: item,
-                            highlighted: ui.highlightedItemIDs.contains(item.id),
+                            hidden: HiddenFlag.isHidden(item.url),
+                            isBeingDragged: session.payload?.itemID == item.id,
                             actions: actions
+                        )
+                        .onDrag {
+                            let payload = DragPayload(boxID: boxID, itemID: item.id)
+                            session.begin(payload)
+                            return DragPayload.provider(for: payload)
+                        } preview: {
+                            dragPreview(for: item)
+                        }
+                        .onDrop(
+                            of: [DragPayload.utType],
+                            delegate: ItemDropDelegate(
+                                targetIndex: index,
+                                boxID: boxID,
+                                model: model,
+                                session: session
+                            )
                         )
                     }
                 }
@@ -236,6 +281,16 @@ struct BoxView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private func dragPreview(for item: ResolvedItem) -> some View {
+        HStack(spacing: 6) {
+            Image(nsImage: item.icon).resizable().frame(width: 20, height: 20)
+            Text(item.name).font(.system(size: 11)).lineLimit(1)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(Capsule().fill(Color(nsColor: .controlBackgroundColor)))
     }
 
     private var emptyState: some View {
@@ -297,11 +352,49 @@ struct BoxView: View {
     }
 }
 
+// MARK: - 框内重排 / 跨框转移
+
+struct ItemDropDelegate: DropDelegate {
+    let targetIndex: Int
+    let boxID: UUID
+    @ObservedObject var model: BoxItemsModel
+    @ObservedObject var session: DragSession
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [DragPayload.utType])
+    }
+
+    func dropEntered(info: DropInfo) {
+        guard let payload = session.payload else { return }
+        session.handled = true
+        guard payload.boxID == boxID else { return }
+        Store.shared.moveItem(in: boxID, itemID: payload.itemID, to: targetIndex)
+        model.refresh(force: true)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let payload = session.payload else { return false }
+        session.handled = true
+
+        if payload.boxID == boxID {
+            Store.shared.moveItem(in: boxID, itemID: payload.itemID, to: targetIndex)
+            model.refresh(force: true)
+        } else {
+            Store.shared.transferItem(payload.itemID, from: payload.boxID, to: boxID, at: targetIndex)
+            model.refresh(force: true)
+            BoxWindowManager.shared.refreshAll()
+        }
+        DispatchQueue.main.async { session.finish() }
+        return true
+    }
+}
+
 // MARK: - 条目格子
 
 struct ItemTile: View {
     let item: ResolvedItem
-    let highlighted: Bool
+    let hidden: Bool
+    let isBeingDragged: Bool
     let actions: BoxActions
 
     @State private var hovering = false
@@ -316,12 +409,9 @@ struct ItemTile: View {
                     .opacity(item.isBroken ? 0.35 : 1)
 
                 if item.isBroken {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.white)
-                        .padding(2)
-                        .background(Circle().fill(Color.orange))
-                        .offset(x: 4, y: -3)
+                    badge("exclamationmark.triangle.fill", color: .orange)
+                } else if hidden {
+                    badge("eye.slash.fill", color: .gray)
                 }
             }
             Text(item.name)
@@ -335,28 +425,49 @@ struct ItemTile: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(highlighted ? 0.16 : (hovering ? 0.10 : 0)))
+                .fill(Color.primary.opacity(hovering ? 0.10 : 0))
         )
+        .opacity(isBeingDragged ? 0.35 : 1)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture(count: 2) {
             if item.exists { actions.openItem(item.url) }
         }
-        .contextMenu {
-            if item.exists {
-                Button("打开") { actions.openItem(item.url) }
-                Button("在访达中显示") { actions.revealItem(item.url) }
-            } else {
-                Text("文件已不在原位置")
-            }
-            Divider()
-            Button("复制路径") { actions.copyItemPath(item.url) }
-            Button("从框中移除") { actions.removeItem(item.id) }
-            if item.exists {
-                Divider()
-                Button("移到废纸篓…") { actions.trashItem(item.url) }
-            }
-        }
+        .contextMenu { menu }
         .help(item.isBroken ? "\(item.name)\n（文件已不在原位置）" : item.url.path)
+    }
+
+    private func badge(_ symbol: String, color: Color) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 8))
+            .foregroundStyle(.white)
+            .padding(2.5)
+            .background(Circle().fill(color))
+            .offset(x: 4, y: -3)
+    }
+
+    @ViewBuilder
+    private var menu: some View {
+        if item.exists {
+            Button("打开") { actions.openItem(item.url) }
+            Button("用 VSCode 打开") { actions.openInEditor(item.url) }
+            Button("在终端中打开") { actions.openInTerminal(item.url) }
+            Button("在访达中显示") { actions.revealItem(item.url) }
+            Divider()
+            if hidden {
+                Button("显示原文件") { actions.toggleItemHidden(item.id, false) }
+            } else {
+                Button("隐藏原文件") { actions.toggleItemHidden(item.id, true) }
+            }
+        } else {
+            Text("文件已不在原位置")
+        }
+        Divider()
+        Button("复制路径") { actions.copyItemPath(item.url) }
+        Button("从框中移除") { actions.removeItem(item.id) }
+        if item.exists {
+            Divider()
+            Button("移到废纸篓…") { actions.trashItem(item.url) }
+        }
     }
 }

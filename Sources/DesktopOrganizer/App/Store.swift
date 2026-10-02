@@ -385,6 +385,50 @@ final class Store: ObservableObject {
         }
     }
 
+    // MARK: 拖拽
+
+    /// 框内重排。
+    func moveItem(in boxID: UUID, itemID: UUID, to targetIndex: Int) {
+        guard let boxIndex = index(of: boxID),
+              let from = boxes[boxIndex].items.firstIndex(where: { $0.id == itemID }) else { return }
+        let to = max(0, min(targetIndex, boxes[boxIndex].items.count - 1))
+        guard from != to else { return }
+        let item = boxes[boxIndex].items.remove(at: from)
+        boxes[boxIndex].items.insert(item, at: to)
+        scheduleSave()
+    }
+
+    /// 把条目从一个整理框拖到另一个整理框。didHide 状态跟着走，不重复动文件。
+    @discardableResult
+    func transferItem(_ itemID: UUID, from sourceBox: UUID, to targetBox: UUID, at targetIndex: Int) -> Bool {
+        guard sourceBox != targetBox,
+              let sourceIndex = index(of: sourceBox),
+              let targetBoxIndex = index(of: targetBox),
+              let from = boxes[sourceIndex].items.firstIndex(where: { $0.id == itemID }) else { return false }
+        let item = boxes[sourceIndex].items.remove(at: from)
+        let to = max(0, min(targetIndex, boxes[targetBoxIndex].items.count))
+        boxes[targetBoxIndex].items.insert(item, at: to)
+        scheduleSave()
+        return true
+    }
+
+    /// 单个条目的原位置显示/隐藏切换。
+    func setItemHidden(_ hidden: Bool, itemID: UUID, in boxID: UUID) {
+        guard let boxIndex = index(of: boxID),
+              let itemIndex = boxes[boxIndex].items.firstIndex(where: { $0.id == itemID }) else { return }
+        let url = boxes[boxIndex].items[itemIndex].url
+        if HiddenFlag.setHidden(hidden, for: url) {
+            boxes[boxIndex].items[itemIndex].didHide = hidden
+            scheduleSave()
+        }
+    }
+
+    func isItemHidden(_ itemID: UUID, in boxID: UUID) -> Bool {
+        guard let box = box(id: boxID),
+              let item = box.items.first(where: { $0.id == itemID }) else { return false }
+        return HiddenFlag.isHidden(item.url)
+    }
+
     // MARK: 首次启动
 
     private func createStarterBoxes() {

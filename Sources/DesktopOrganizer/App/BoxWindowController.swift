@@ -77,12 +77,18 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
             newBox: { [weak self] in self?.createSiblingBox() },
             handleDrop: { [weak self] urls in self?.handleDrop(urls) },
             openItem: { FileActions.open($0) },
-            revealItem: { FileActions.reveal($0) },
+            revealItem: { [weak self] url in self?.revealKeepingVisibility(url) },
             copyItemPath: { FileActions.copyPath($0) },
+            openInEditor: { FileActions.openInCodeEditor($0) },
+            openInTerminal: { FileActions.openInTerminal($0) },
             removeItem: { [weak self] id in self?.itemsModel.remove([id]) },
             trashItem: { [weak self] url in self?.confirmTrash(url) },
-            clearItems: { [weak self] in self?.confirmClear() },
-            relocateMissing: { [weak self] in self?.itemsModel.refresh(force: true) }
+            toggleItemHidden: { [weak self] id, hidden in
+                guard let self else { return }
+                Store.shared.setItemHidden(hidden, itemID: id, in: self.boxID)
+                self.itemsModel.refresh(force: true)
+            },
+            clearItems: { [weak self] in self?.confirmClear() }
         )
     }
 
@@ -260,6 +266,15 @@ final class BoxWindowController: NSObject, NSWindowDelegate {
         let newBox = Store.shared.addBox()
         BoxWindowManager.shared.sync(Store.shared.boxes)
         BoxWindowManager.shared.focus(id: newBox.id)
+    }
+
+    /// 隐藏的文件在访达里是选不中的，所以先临时恢复显示再定位。
+    private func revealKeepingVisibility(_ url: URL) {
+        if HiddenFlag.isHidden(url) {
+            HiddenFlag.setHidden(false, for: url)
+            itemsModel.refresh(force: true)
+        }
+        FileActions.reveal(url)
     }
 
     private func confirmClear() {
